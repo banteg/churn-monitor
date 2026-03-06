@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from churn_monitor.app import create_app, encode_sse, snapshot_event
+from churn_monitor.app import create_app, encode_sse, snapshot_event, stream_sync_events
 from churn_monitor.cli import signal_watchers_to_stop
 from churn_monitor.git_diff import ChurnMonitorError, collect_overview, collect_snapshot, resolve_base_ref
 
@@ -239,6 +239,28 @@ def test_snapshot_event_returns_problem_for_invalid_base(repo: Path) -> None:
     assert event_name == "problem"
     assert payload["status"] == 404
     assert fingerprint.startswith("problem:")
+
+
+def test_stream_sync_events_emits_targets_before_selected_snapshot(repo: Path) -> None:
+    git(repo, "checkout", "-b", "feature")
+    write(repo, "feature.txt", b"feature work\n")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-m", "feat: feature work")
+
+    events = list(stream_sync_events(repo, None))
+
+    assert events[0][0] == "targets"
+    assert events[0][1]["reset"] is True
+    assert events[0][1]["selected_target_id"] == "branch:feature"
+    assert events[0][1]["targets"][0]["summary"] is None
+
+    assert events[1][0] == "snapshot"
+    assert events[1][1]["target_id"] == "branch:feature"
+    assert events[1][1]["head_ref"] == "feature"
+
+    assert events[2][0] == "targets"
+    assert events[2][1]["reset"] is False
+    assert events[2][1]["targets"][0]["summary"]["commit_count"] == 1
 
 
 def test_shutdown_sets_watch_stop_event(repo: Path) -> None:

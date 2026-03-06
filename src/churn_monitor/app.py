@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
-from typing import AsyncIterator
+from typing import AsyncIterator, Iterator
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
@@ -18,13 +18,19 @@ from .git_diff import (
     ChurnMonitorError,
     collect_monitor_targets,
     collect_overview,
+    collect_target_snapshot,
+    merge_latest_timestamp,
+    MonitorTarget,
+    pick_selected_target_id,
     resolve_repo_root,
     resolve_watch_paths,
 )
+from .models import DiffSnapshot
 
 WATCH_RETRY_MS = 1000
 WATCH_DEBOUNCE_MS = 400
 WATCH_KEEPALIVE_MS = 15000
+TARGET_SUMMARY_BATCH_SIZE = 12
 IGNORED_WATCH_PARTS = {
     ".hypothesis",
     ".idea",
@@ -103,18 +109,29 @@ def create_app(
         resolved_base = base or default_base
 
         async def event_stream() -> AsyncIterator[str]:
-            last_fingerprint: str | None = None
             selected_target_id = target
             watch_paths = resolve_watch_paths(resolved_root)
 
-            event_name, payload, fingerprint = snapshot_event(
-                resolved_root,
-                resolved_base,
-                selected_target_id=selected_target_id,
-                last_edit_overrides=app.state.last_edit_overrides,
-            )
-            last_fingerprint = fingerprint
-            yield encode_sse(event_name, payload, retry_ms=WATCH_RETRY_MS)
+            first_event = True
+            try:
+                for event_name, payload in stream_sync_events(
+                    resolved_root,
+                    resolved_base,
+                    selected_target_id=selected_target_id,
+                    last_edit_overrides=app.state.last_edit_overrides,
+                ):
+                    if await request.is_disconnected():
+                        return
+                    yield encode_sse(
+                        event_name,
+                        payload,
+                        retry_ms=WATCH_RETRY_MS if first_event else None,
+                    )
+                    first_event = False
+            except ChurnMonitorError as exc:
+                payload = {"status": exc.status_code, "detail": str(exc)}
+                yield encode_sse("problem", payload, retry_ms=WATCH_RETRY_MS)
+                return
 
             while True:
                 restart_watch = False
@@ -137,20 +154,25 @@ def create_app(
                     app.state.last_edit_overrides.update(
                         detect_target_last_edits(resolved_root, changes),
                     )
-                    event_name, payload, fingerprint = snapshot_event(
-                        resolved_root,
-                        resolved_base,
-                        selected_target_id=selected_target_id,
-                        last_edit_overrides=app.state.last_edit_overrides,
-                    )
                     next_watch_paths = resolve_watch_paths(resolved_root)
                     if next_watch_paths != watch_paths:
                         watch_paths = next_watch_paths
                         restart_watch = True
 
-                    if fingerprint != last_fingerprint:
-                        last_fingerprint = fingerprint
-                        yield encode_sse(event_name, payload)
+                    try:
+                        for event_name, payload in stream_sync_events(
+                            resolved_root,
+                            resolved_base,
+                            selected_target_id=selected_target_id,
+                            last_edit_overrides=app.state.last_edit_overrides,
+                        ):
+                            if await request.is_disconnected():
+                                return
+                            yield encode_sse(event_name, payload)
+                    except ChurnMonitorError as exc:
+                        payload = {"status": exc.status_code, "detail": str(exc)}
+                        yield encode_sse("problem", payload)
+                        return
 
                     if restart_watch:
                         break
@@ -202,6 +224,99 @@ def snapshot_event(
 
     payload = overview_model.model_dump(mode="json")
     return "snapshot", payload, build_payload_fingerprint(payload)
+
+
+def stream_sync_events(
+    repo_root: Path,
+    base_ref: str | None,
+    *,
+    selected_target_id: str | None = None,
+    last_edit_overrides: dict[str, datetime] | None = None,
+) -> Iterator[tuple[str, dict[str, object]]]:
+    resolved_root = resolve_repo_root(repo_root)
+    targets = collect_monitor_targets(resolved_root)
+    if not targets:
+        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
+
+    overrides = last_edit_overrides or {}
+    effective_target_id = pick_selected_target_id(selected_target_id, targets)
+    selected_target = next(target for target in targets if target.id == effective_target_id)
+
+    yield "targets", {
+        "reset": True,
+        "selected_target_id": effective_target_id,
+        "targets": [build_target_descriptor(target) for target in targets],
+    }
+
+    selected_snapshot = collect_target_snapshot(selected_target, base_ref)
+    apply_last_edit_override(selected_snapshot, selected_target, overrides)
+    yield "snapshot", selected_snapshot.model_dump(mode="json")
+    yield "targets", {
+        "reset": False,
+        "selected_target_id": effective_target_id,
+        "targets": [build_target_summary_payload(selected_target, selected_snapshot)],
+    }
+
+    pending_targets: list[dict[str, object]] = []
+    for target in targets:
+        if target.id == effective_target_id:
+            continue
+
+        snapshot = collect_target_snapshot(target, base_ref)
+        apply_last_edit_override(snapshot, target, overrides)
+        pending_targets.append(build_target_summary_payload(target, snapshot))
+        if len(pending_targets) >= TARGET_SUMMARY_BATCH_SIZE:
+            yield "targets", {
+                "reset": False,
+                "selected_target_id": effective_target_id,
+                "targets": pending_targets,
+            }
+            pending_targets = []
+
+    if pending_targets:
+        yield "targets", {
+            "reset": False,
+            "selected_target_id": effective_target_id,
+            "targets": pending_targets,
+        }
+
+
+def build_target_descriptor(target: MonitorTarget) -> dict[str, object]:
+    return {
+        "id": target.id,
+        "head_ref": target.head_ref,
+        "worktree_path": str(target.worktree_path) if target.worktree_path is not None else None,
+        "last_activity_at": None,
+        "summary": None,
+        "is_current": target.is_current,
+    }
+
+
+def build_target_summary_payload(
+    target: MonitorTarget,
+    snapshot: DiffSnapshot,
+) -> dict[str, object]:
+    snapshot_payload = snapshot.model_dump(mode="json")
+    return {
+        "id": snapshot_payload["target_id"],
+        "head_ref": snapshot_payload["head_ref"],
+        "worktree_path": snapshot_payload["worktree_path"],
+        "last_activity_at": snapshot_payload["last_edit_at"] or snapshot_payload["head_commit_at"],
+        "summary": snapshot_payload["summary"],
+        "is_current": target.is_current,
+    }
+
+
+def apply_last_edit_override(
+    snapshot: DiffSnapshot,
+    target: MonitorTarget,
+    overrides: dict[str, datetime],
+) -> None:
+    if target.last_edit_key and target.last_edit_key in overrides:
+        snapshot.last_edit_at = merge_latest_timestamp(
+            snapshot.last_edit_at,
+            overrides[target.last_edit_key],
+        )
 
 
 def build_payload_fingerprint(payload: dict[str, object]) -> str:

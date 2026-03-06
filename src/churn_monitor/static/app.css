@@ -36,13 +36,17 @@ body {
   align-items: stretch;
   gap: 8px;
   padding: 0 4px 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
 
 .target-pills {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
 }
 
 .branch-pill {
@@ -52,8 +56,9 @@ body {
   color: var(--text);
   border-radius: 999px;
   padding: 10px 14px;
-  min-width: 180px;
-  max-width: min(100%, 320px);
+  flex: 0 0 auto;
+  width: clamp(210px, 22vw, 320px);
+  max-width: none;
   display: grid;
   gap: 3px;
   text-align: left;
@@ -455,8 +460,7 @@ body {
   }
 
   .branch-pill {
-    min-width: 100%;
-    max-width: 100%;
+    width: min(280px, calc(100vw - 32px));
     border-radius: 18px;
   }
 }

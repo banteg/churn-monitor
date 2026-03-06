@@ -178,6 +178,33 @@ function renderTargetTimes() {
   }
 }
 
+function targetActivityMs(target) {
+  const timestampMs = target.last_activity_at ? Date.parse(target.last_activity_at) : NaN;
+  return Number.isFinite(timestampMs) ? timestampMs : -1;
+}
+
+function sortTargets(targets) {
+  return [...targets].sort((left, right) => {
+    const rightTime = targetActivityMs(right);
+    const leftTime = targetActivityMs(left);
+    if (rightTime !== leftTime) {
+      return rightTime - leftTime;
+    }
+    return left.head_ref.localeCompare(right.head_ref);
+  });
+}
+
+function mergeTarget(previous, incoming) {
+  return {
+    id: incoming.id ?? previous?.id ?? "",
+    head_ref: incoming.head_ref ?? previous?.head_ref ?? "",
+    worktree_path: incoming.worktree_path ?? previous?.worktree_path ?? null,
+    last_activity_at: incoming.last_activity_at ?? previous?.last_activity_at ?? null,
+    summary: incoming.summary ?? previous?.summary ?? null,
+    is_current: incoming.is_current ?? previous?.is_current ?? false,
+  };
+}
+
 function renderRelativeTimes() {
   renderLastEdit();
   renderCommitTimes();
@@ -469,6 +496,9 @@ function setStatus(label, tone = "neutral") {
 
 function branchPillStats(target) {
   const summary = target.summary;
+  if (!summary) {
+    return "loading...";
+  }
   if (summary.changed_files === 0) {
     return "aligned with base";
   }
@@ -561,11 +591,18 @@ function applySnapshot(snapshot) {
   setStatus("Live", "positive");
 }
 
-function applyOverview(overview) {
-  state.targets = overview.targets;
-  state.selectedTargetId = overview.selected_target_id;
-  renderTargetPills(overview.targets);
-  applySnapshot(overview.snapshot);
+function applyTargetsUpdate(update) {
+  const existingTargets = new Map(state.targets.map((target) => [target.id, target]));
+  const nextTargets = update.reset ? new Map() : new Map(existingTargets);
+
+  for (const target of update.targets) {
+    const previous = existingTargets.get(target.id);
+    nextTargets.set(target.id, mergeTarget(previous, target));
+  }
+
+  state.selectedTargetId = update.selected_target_id ?? state.selectedTargetId;
+  state.targets = sortTargets([...nextTargets.values()]);
+  renderTargetPills(state.targets);
 }
 
 function setTreemapMetric(metric) {
@@ -648,7 +685,14 @@ function connectStream() {
     if (state.stream !== stream) {
       return;
     }
-    applyOverview(JSON.parse(event.data));
+    applySnapshot(JSON.parse(event.data));
+  });
+
+  stream.addEventListener("targets", (event) => {
+    if (state.stream !== stream) {
+      return;
+    }
+    applyTargetsUpdate(JSON.parse(event.data));
   });
 
   stream.addEventListener("problem", (event) => {
