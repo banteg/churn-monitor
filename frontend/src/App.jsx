@@ -599,9 +599,7 @@ export default function App() {
       if (!targetId) {
         return;
       }
-      queryClient.invalidateQueries({
-        queryKey: ["snapshot", config.defaultBase ?? "", targetId],
-      });
+      void snapshotQuery.refetch();
     });
 
     stream.addEventListener("problem", (event) => {
