@@ -13,22 +13,12 @@
   </head>
   <body>
     <div class="shell">
-      <header class="hero">
+      <header class="topbar">
         <div>
-          <p class="eyebrow">Realtime Git Diff Treemap</p>
-          <h1>Track where churn lands before it sprawls.</h1>
-          <p class="lede">
-            Area shows total touched lines. Color shows net growth or cuts, so
-            you can spot code removal in one area and test growth in another at a glance.
-          </p>
+          <p class="eyebrow">Diff Treemap</p>
+          <h1>Current branch vs base</h1>
         </div>
-        <form id="base-form" class="controls">
-          <label class="field">
-            <span>Base ref</span>
-            <input id="base-input" name="base" type="text" placeholder="origin/main or main">
-          </label>
-          <button type="submit">Apply</button>
-        </form>
+        <div id="status-pill" class="status-pill">Loading</div>
       </header>
 
       <section class="summary-grid">
@@ -80,7 +70,6 @@
               <p class="panel-title">Treemap</p>
               <p class="panel-subtitle">Area = churn, color = net delta</p>
             </div>
-            <div id="status-pill" class="status-pill">Loading</div>
           </div>
           <div id="treemap" class="treemap"></div>
         </article>
@@ -104,20 +93,6 @@
               </div>
             </div>
             <ol id="top-deletions" class="change-list"></ol>
-          </article>
-
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <p class="panel-title">Notes</p>
-                <p class="panel-subtitle">How to read the map</p>
-              </div>
-            </div>
-            <ul class="notes-list">
-              <li>Blue-green tiles trend positive. Coral tiles trend negative.</li>
-              <li>Binary changes are shown with a minimum size so they stay visible.</li>
-              <li>Click a directory to zoom into its local balance of cuts and additions.</li>
-            </ul>
           </article>
         </aside>
       </section>

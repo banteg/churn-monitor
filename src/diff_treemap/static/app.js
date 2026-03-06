@@ -1,13 +1,10 @@
 const config = window.DIFF_TREEMAP_CONFIG ?? {};
 const state = {
   snapshotKey: null,
-  base: new URLSearchParams(window.location.search).get("base") || config.defaultBase || "",
   stream: null,
 };
 
 const els = {
-  baseForm: document.getElementById("base-form"),
-  baseInput: document.getElementById("base-input"),
   changedFiles: document.getElementById("changed-files"),
   addedLines: document.getElementById("added-lines"),
   deletedLines: document.getElementById("deleted-lines"),
@@ -204,8 +201,8 @@ function applySnapshot(snapshot) {
 
 function eventsUrl() {
   const params = new URLSearchParams();
-  if (state.base) {
-    params.set("base", state.base);
+  if (config.defaultBase) {
+    params.set("base", config.defaultBase);
   }
   return params.size ? `/api/events?${params.toString()}` : "/api/events";
 }
@@ -246,24 +243,5 @@ function connectStream() {
     renderError(payload.detail || "Unable to load snapshot.");
   });
 }
-
-function applyBase(base) {
-  state.base = base.trim();
-  const url = new URL(window.location.href);
-  if (state.base) {
-    url.searchParams.set("base", state.base);
-  } else {
-    url.searchParams.delete("base");
-  }
-  window.history.replaceState({}, "", url);
-  state.snapshotKey = null;
-  connectStream();
-}
-
-els.baseInput.value = state.base;
-els.baseForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  applyBase(els.baseInput.value);
-});
 
 connectStream();

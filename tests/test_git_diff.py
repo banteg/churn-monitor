@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from diff_treemap.app import create_app, encode_sse, snapshot_event
+from diff_treemap.cli import signal_watchers_to_stop
 from diff_treemap.git_diff import DiffTreemapError, collect_snapshot, resolve_base_ref
 
 
@@ -94,9 +95,8 @@ def test_collect_snapshot_marks_binary_untracked(repo: Path) -> None:
 def test_api_returns_error_for_unborn_head(tmp_path: Path) -> None:
     git(tmp_path, "init", "--initial-branch=main")
     app = create_app(tmp_path)
-    client = TestClient(app)
-
-    response = client.get("/api/snapshot")
+    with TestClient(app) as client:
+        response = client.get("/api/snapshot")
 
     assert response.status_code == 409
     assert "No commits found yet" in response.json()["detail"]
@@ -132,3 +132,22 @@ def test_snapshot_event_returns_problem_for_invalid_base(repo: Path) -> None:
     assert event_name == "problem"
     assert payload["status"] == 404
     assert fingerprint.startswith("problem:")
+
+
+def test_shutdown_sets_watch_stop_event(repo: Path) -> None:
+    app = create_app(repo)
+
+    with TestClient(app) as client:
+        client.get("/api/snapshot")
+        assert app.state.watch_stop_event.is_set() is False
+
+    assert app.state.watch_stop_event.is_set() is True
+
+
+def test_signal_watchers_to_stop_sets_watch_stop_event(repo: Path) -> None:
+    app = create_app(repo)
+
+    with TestClient(app) as client:
+        client.get("/api/snapshot")
+        signal_watchers_to_stop(app)
+        assert app.state.watch_stop_event.is_set() is True

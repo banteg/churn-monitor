@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Event
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -42,7 +44,8 @@ def create_app(
         resolved_root = initial_root
     watch_paths = resolve_watch_paths(resolved_root)
     static_dir = Path(__file__).resolve().parent / "static"
-    app = FastAPI(title="Diff Treemap", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Diff Treemap", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app.state.watch_stop_event = Event()
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     config = {
@@ -92,6 +95,7 @@ def create_app(
                 watch_filter=watch_filter,
                 debounce=max(debounce_ms, 50),
                 step=50,
+                stop_event=app.state.watch_stop_event,
                 rust_timeout=WATCH_KEEPALIVE_MS,
                 yield_on_timeout=True,
             ):
@@ -120,6 +124,15 @@ def create_app(
         )
 
     return app
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.watch_stop_event.clear()
+    try:
+        yield
+    finally:
+        app.state.watch_stop_event.set()
 
 
 def snapshot_event(repo_root: Path, base_ref: str | None) -> tuple[str, dict[str, object], str]:
