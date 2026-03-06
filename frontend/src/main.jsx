@@ -8,10 +8,15 @@ import "./styles.css";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: Infinity,
+      staleTime: "static",
+      gcTime: Infinity,
+      refetchInterval: false,
+      refetchIntervalInBackground: false,
+      refetchOnMount: false,
       refetchOnReconnect: false,
       refetchOnWindowFocus: false,
-      retry: 1,
+      retry: false,
+      retryOnMount: false,
     },
   },
 });
