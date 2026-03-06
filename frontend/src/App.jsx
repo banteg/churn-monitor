@@ -128,25 +128,12 @@ function targetActivityMs(target) {
   return parseTimestamp(target.last_activity_at) ?? -1;
 }
 
-function targetDiffPriority(target) {
-  if (!target.summary) {
-    return 1;
-  }
-  return target.summary.changed_files === 0 ? 2 : 0;
-}
-
 function targetHasDiff(target) {
   return Boolean(target.summary && target.summary.changed_files > 0);
 }
 
 function sortTargets(targets) {
   return [...targets].sort((left, right) => {
-    const leftPriority = targetDiffPriority(left);
-    const rightPriority = targetDiffPriority(right);
-    if (leftPriority !== rightPriority) {
-      return leftPriority - rightPriority;
-    }
-
     const rightTime = targetActivityMs(right);
     const leftTime = targetActivityMs(left);
     if (rightTime !== leftTime) {
@@ -520,8 +507,8 @@ export default function App() {
   const [problemMessage, setProblemMessage] = createSignal("");
   const [nowMs, setNowMs] = createSignal(Date.now());
   const [hasSeenSnapshot, setHasSeenSnapshot] = createSignal(false);
-  const [hasAutoPromotedTarget, setHasAutoPromotedTarget] = createSignal(false);
   const [hasUserSelectedTarget, setHasUserSelectedTarget] = createSignal(false);
+  const [hasResolvedInitialSelection, setHasResolvedInitialSelection] = createSignal(false);
 
   const configQuery = createQuery(() => ({
     queryKey: ["config"],
@@ -631,6 +618,10 @@ export default function App() {
   });
 
   const sortedTargets = createMemo(() => sortTargets(targetsQuery.data?.targets ?? []));
+  const allVisibleTargetsSummarized = createMemo(() => {
+    const targets = sortedTargets();
+    return targets.length > 0 && targets.every((target) => target.summary);
+  });
 
   const selectedTarget = createMemo(() => {
     const targetId = selectedTargetId();
@@ -710,22 +701,31 @@ export default function App() {
   });
 
   createEffect(() => {
-    if (hasAutoPromotedTarget() || hasUserSelectedTarget()) {
+    if (hasResolvedInitialSelection() || hasUserSelectedTarget()) {
+      return;
+    }
+
+    if (!allVisibleTargetsSummarized()) {
       return;
     }
 
     const selected = selectedTarget();
-    if (!selected?.summary || selected.summary.changed_files !== 0) {
+    if (!selected?.summary) {
       return;
     }
 
     const interestingTarget = sortedTargets().find(targetHasDiff);
-    if (!interestingTarget || interestingTarget.id === selected.id) {
+    if (
+      selected.summary.changed_files === 0 &&
+      interestingTarget &&
+      interestingTarget.id !== selected.id
+    ) {
+      setHasResolvedInitialSelection(true);
+      setSelectedTargetId(interestingTarget.id);
       return;
     }
 
-    setHasAutoPromotedTarget(true);
-    setSelectedTargetId(interestingTarget.id);
+    setHasResolvedInitialSelection(true);
   });
 
   function updateTreemapMetric(metric) {
@@ -749,6 +749,7 @@ export default function App() {
       return;
     }
     setHasUserSelectedTarget(true);
+    setHasResolvedInitialSelection(true);
     setProblemMessage("");
     setSelectedTargetId(targetId);
   }
