@@ -56,8 +56,13 @@ class MonitorTargetSummary(BaseModel):
     head_ref: str
     worktree_path: str | None = None
     last_activity_at: datetime | None = None
-    summary: SnapshotSummary
+    summary: SnapshotSummary | None = None
     is_current: bool = False
+
+
+class MonitorTargetsPayload(BaseModel):
+    selected_target_id: str
+    targets: list[MonitorTargetSummary]
 
 
 class MonitorOverview(BaseModel):

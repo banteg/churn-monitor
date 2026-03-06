@@ -190,17 +190,27 @@ def test_api_returns_error_for_unborn_head(tmp_path: Path) -> None:
     assert "No commits found yet" in response.json()["detail"]
 
 
-def test_index_includes_versioned_static_assets(repo: Path) -> None:
-    app = create_app(repo)
+def test_index_serves_built_frontend(repo: Path, tmp_path: Path) -> None:
+    client_dir = tmp_path / "client"
+    client_dir.mkdir()
+    (client_dir / "index.html").write_text("<!doctype html><title>client</title>", encoding="utf-8")
+    app = create_app(repo, client_dir=client_dir)
 
     with TestClient(app) as client:
         response = client.get("/")
 
     assert response.status_code == 200
-    assert "/static/app.css?v=" in response.text
-    assert "/static/app.js?v=" in response.text
-    assert "/plotly.min.js?v=" in response.text
-    assert "__ASSET_VERSION__" not in response.text
+    assert "<title>client</title>" in response.text
+
+
+def test_index_returns_503_when_frontend_build_is_missing(repo: Path, tmp_path: Path) -> None:
+    app = create_app(repo, client_dir=tmp_path / "missing-client")
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 503
+    assert "Frontend build missing" in response.text
 
 
 def test_collect_snapshot_requires_resolvable_base(repo: Path) -> None:
@@ -215,21 +225,19 @@ def test_snapshot_event_returns_initial_snapshot(repo: Path) -> None:
     event_name, payload, fingerprint = snapshot_event(repo, None)
 
     assert event_name == "snapshot"
-    assert payload["selected_target_id"] == "branch:feature"
-    assert payload["snapshot"]["base_ref"] == "main"
-    assert payload["snapshot"]["head_ref"] == "feature"
-    assert payload["snapshot"]["target_id"] == "branch:feature"
-    assert payload["snapshot"]["summary"]["commit_count"] == 0
-    assert "last_edit_at" in payload["snapshot"]
-    assert payload["snapshot"]["commits"] == []
-    assert {target["head_ref"] for target in payload["targets"]} == {"feature", "main"}
+    assert payload["base_ref"] == "main"
+    assert payload["head_ref"] == "feature"
+    assert payload["target_id"] == "branch:feature"
+    assert payload["summary"]["commit_count"] == 0
+    assert "last_edit_at" in payload
+    assert payload["commits"] == []
     assert fingerprint
 
     encoded = encode_sse(event_name, payload, retry_ms=1000)
     assert encoded.startswith("retry: 1000\nevent: snapshot\n")
     payload_line = next(line for line in encoded.splitlines() if line.startswith("data: "))
     decoded = json.loads(payload_line.removeprefix("data: "))
-    assert decoded["snapshot"]["snapshot_key"] == payload["snapshot"]["snapshot_key"]
+    assert decoded["snapshot_key"] == payload["snapshot_key"]
 
 
 def test_snapshot_event_returns_problem_for_invalid_base(repo: Path) -> None:
@@ -241,7 +249,7 @@ def test_snapshot_event_returns_problem_for_invalid_base(repo: Path) -> None:
     assert fingerprint.startswith("problem:")
 
 
-def test_stream_sync_events_emits_targets_before_selected_snapshot(repo: Path) -> None:
+def test_stream_sync_events_emits_targets_updates(repo: Path) -> None:
     git(repo, "checkout", "-b", "feature")
     write(repo, "feature.txt", b"feature work\n")
     git(repo, "add", "feature.txt")
@@ -254,13 +262,12 @@ def test_stream_sync_events_emits_targets_before_selected_snapshot(repo: Path) -
     assert events[0][1]["selected_target_id"] == "branch:feature"
     assert events[0][1]["targets"][0]["summary"] is None
 
-    assert events[1][0] == "snapshot"
-    assert events[1][1]["target_id"] == "branch:feature"
-    assert events[1][1]["head_ref"] == "feature"
-
-    assert events[2][0] == "targets"
-    assert events[2][1]["reset"] is False
-    assert events[2][1]["targets"][0]["summary"]["commit_count"] == 1
+    assert events[1][0] == "targets"
+    assert events[1][1]["reset"] is False
+    feature_target = next(
+        target for target in events[1][1]["targets"] if target["id"] == "branch:feature"
+    )
+    assert feature_target["summary"]["commit_count"] == 1
 
 
 def test_shutdown_sets_watch_stop_event(repo: Path) -> None:
@@ -292,5 +299,34 @@ def test_snapshot_event_uses_watcher_last_edit(repo: Path) -> None:
     )
 
     assert event_name == "snapshot"
-    assert payload["snapshot"]["last_edit_at"] == "2026-03-06T10:00:00Z"
+    assert payload["last_edit_at"] == "2026-03-06T10:00:00Z"
     assert fingerprint
+
+
+def test_api_targets_returns_selected_target_and_descriptors(repo: Path) -> None:
+    git(repo, "checkout", "-b", "feature")
+    app = create_app(repo)
+
+    with TestClient(app) as client:
+        response = client.get("/api/targets")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["selected_target_id"] == "branch:feature"
+    assert {target["head_ref"] for target in payload["targets"]} == {"feature", "main"}
+    assert all(target["summary"] is None for target in payload["targets"])
+
+
+def test_api_snapshot_returns_selected_branch_snapshot(repo: Path) -> None:
+    git(repo, "checkout", "-b", "feature")
+    write(repo, "feature.txt", b"feature work\n")
+    app = create_app(repo)
+
+    with TestClient(app) as client:
+        response = client.get("/api/snapshot", params={"target": "branch:feature"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["target_id"] == "branch:feature"
+    assert payload["head_ref"] == "feature"
+    assert payload["summary"]["changed_files"] == 1

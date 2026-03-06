@@ -13,6 +13,7 @@ from .models import (
     DiffNode,
     DiffSnapshot,
     MonitorOverview,
+    MonitorTargetsPayload,
     MonitorTargetSummary,
     SnapshotSummary,
 )
@@ -74,6 +75,67 @@ class WorktreeEntry:
     is_detached: bool = False
 
 
+@dataclass(slots=True)
+class SnapshotPlan:
+    repo_root: Path
+    head_ref: str
+    head_spec: str
+    base_ref: str
+    merge_base: str
+    target_id: str
+    worktree_path: Path | None
+    include_untracked: bool
+
+
+def resolve_snapshot_plan(
+    repo_root: Path,
+    base_override: str | None = None,
+    *,
+    head_ref_override: str | None = None,
+    target_id: str | None = None,
+    worktree_path: Path | None = None,
+) -> SnapshotPlan:
+    resolved_root = resolve_repo_root(repo_root)
+
+    if head_ref_override is None:
+        if not head_exists(resolved_root):
+            raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
+        head_ref = resolve_head_ref(resolved_root)
+        head_spec = "HEAD"
+        include_untracked = True
+    else:
+        try:
+            verify_ref(resolved_root, head_ref_override)
+        except ChurnMonitorError as exc:
+            raise ChurnMonitorError(
+                f"Head ref '{head_ref_override}' does not resolve to a commit.",
+                status_code=404,
+            ) from exc
+        head_ref = head_ref_override
+        head_spec = head_ref_override
+        include_untracked = False
+
+    base_ref = resolve_base_ref(resolved_root, base_override)
+    try:
+        merge_base = git_text(resolved_root, "merge-base", head_spec, base_ref).strip()
+    except ChurnMonitorError as exc:
+        raise ChurnMonitorError(
+            f"Unable to compute a merge base between {head_ref} and {base_ref}.",
+            status_code=409,
+        ) from exc
+
+    return SnapshotPlan(
+        repo_root=resolved_root,
+        head_ref=head_ref,
+        head_spec=head_spec,
+        base_ref=base_ref,
+        merge_base=merge_base,
+        target_id=target_id or build_branch_target_id(head_ref),
+        worktree_path=worktree_path,
+        include_untracked=include_untracked,
+    )
+
+
 def collect_snapshot(
     repo_root: Path,
     base_override: str | None = None,
@@ -82,62 +144,43 @@ def collect_snapshot(
     target_id: str | None = None,
     worktree_path: Path | None = None,
 ) -> DiffSnapshot:
-    repo_root = resolve_repo_root(repo_root)
+    plan = resolve_snapshot_plan(
+        repo_root,
+        base_override,
+        head_ref_override=head_ref_override,
+        target_id=target_id,
+        worktree_path=worktree_path,
+    )
 
-    if head_ref_override is None:
-        if not head_exists(repo_root):
-            raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
-        head_ref = resolve_head_ref(repo_root)
-        head_spec = "HEAD"
-    else:
-        try:
-            verify_ref(repo_root, head_ref_override)
-        except ChurnMonitorError as exc:
-            raise ChurnMonitorError(
-                f"Head ref '{head_ref_override}' does not resolve to a commit.",
-                status_code=404,
-            ) from exc
-        head_ref = head_ref_override
-        head_spec = head_ref_override
-
-    base_ref = resolve_base_ref(repo_root, base_override)
-    try:
-        merge_base = git_text(repo_root, "merge-base", head_spec, base_ref).strip()
-    except ChurnMonitorError as exc:
-        raise ChurnMonitorError(
-            f"Unable to compute a merge base between {head_ref} and {base_ref}.",
-            status_code=409,
-        ) from exc
-
-    tracked = parse_numstat_output(git_numstat(repo_root, merge_base, head_spec))
-    untracked = list(read_untracked_deltas(repo_root)) if head_ref_override is None else []
-    commits = collect_commits(repo_root, merge_base, head_spec=head_spec)
+    tracked = parse_numstat_output(git_numstat(plan.repo_root, plan.merge_base, plan.head_spec))
+    untracked = list(read_untracked_deltas(plan.repo_root)) if plan.include_untracked else []
+    commits = collect_commits(plan.repo_root, plan.merge_base, head_spec=plan.head_spec)
 
     leaves: dict[str, FileDelta] = {delta.path: delta for delta in tracked}
     for delta in untracked:
         leaves[delta.path] = delta
 
-    nodes = build_nodes(repo_root, leaves.values())
+    nodes = build_nodes(plan.repo_root, leaves.values())
     summary = build_summary(leaves.values(), len(commits))
     snapshot_key = compute_snapshot_key(
-        repo_root,
-        head_ref,
-        base_ref,
-        merge_base,
+        plan.repo_root,
+        plan.head_ref,
+        plan.base_ref,
+        plan.merge_base,
         leaves.values(),
         commits,
     )
-    last_edit_at = infer_last_edit_at(repo_root, leaves.values()) if head_ref_override is None else None
-    head_commit_at = resolve_ref_commit_at(repo_root, head_spec)
+    last_edit_at = infer_last_edit_at(plan.repo_root, leaves.values()) if plan.include_untracked else None
+    head_commit_at = resolve_ref_commit_at(plan.repo_root, plan.head_spec)
 
     return DiffSnapshot(
-        target_id=target_id or build_branch_target_id(head_ref),
-        repo_root=str(repo_root),
-        worktree_path=str(worktree_path) if worktree_path is not None else None,
-        head_ref=head_ref,
+        target_id=plan.target_id,
+        repo_root=str(plan.repo_root),
+        worktree_path=str(plan.worktree_path) if plan.worktree_path is not None else None,
+        head_ref=plan.head_ref,
         head_commit_at=head_commit_at,
-        base_ref=base_ref,
-        merge_base=merge_base,
+        base_ref=plan.base_ref,
+        merge_base=plan.merge_base,
         snapshot_key=snapshot_key,
         last_edit_at=last_edit_at,
         generated_at=datetime.now(tz=UTC),
@@ -147,6 +190,63 @@ def collect_snapshot(
     )
 
 
+def collect_targets_payload(
+    repo_root: Path,
+    *,
+    selected_target_id: str | None = None,
+) -> MonitorTargetsPayload:
+    targets = collect_monitor_targets(repo_root)
+    if not targets:
+        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
+
+    effective_target_id = pick_selected_target_id(selected_target_id, targets)
+    return MonitorTargetsPayload(
+        selected_target_id=effective_target_id,
+        targets=[build_target_descriptor(target) for target in targets],
+    )
+
+
+def collect_target_summaries(
+    repo_root: Path,
+    base_override: str | None = None,
+    *,
+    selected_target_id: str | None = None,
+    last_edit_overrides: dict[str, datetime] | None = None,
+) -> MonitorTargetsPayload:
+    targets = collect_monitor_targets(repo_root)
+    if not targets:
+        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
+
+    effective_target_id = pick_selected_target_id(selected_target_id, targets)
+    summaries = [
+        collect_target_summary(
+            target,
+            base_override,
+            last_edit_overrides=last_edit_overrides,
+        )
+        for target in targets
+    ]
+    summaries.sort(key=monitor_target_sort_key)
+    return MonitorTargetsPayload(selected_target_id=effective_target_id, targets=summaries)
+
+
+def collect_snapshot_for_target(
+    repo_root: Path,
+    base_override: str | None = None,
+    *,
+    selected_target_id: str | None = None,
+    last_edit_overrides: dict[str, datetime] | None = None,
+) -> DiffSnapshot:
+    targets = collect_monitor_targets(repo_root)
+    if not targets:
+        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
+
+    effective_target_id = pick_selected_target_id(selected_target_id, targets)
+    target = resolve_target(targets, effective_target_id)
+    snapshot = collect_target_snapshot(target, base_override)
+    return apply_snapshot_overrides(snapshot, target, last_edit_overrides)
+
+
 def collect_overview(
     repo_root: Path,
     base_override: str | None = None,
@@ -154,40 +254,22 @@ def collect_overview(
     selected_target_id: str | None = None,
     last_edit_overrides: dict[str, datetime] | None = None,
 ) -> MonitorOverview:
-    resolved_root = resolve_repo_root(repo_root)
-    targets = collect_monitor_targets(resolved_root)
-    if not targets:
-        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
-
-    overrides = last_edit_overrides or {}
-    snapshots: dict[str, DiffSnapshot] = {}
-    summaries: list[MonitorTargetSummary] = []
-
-    for target in targets:
-        snapshot = collect_target_snapshot(target, base_override)
-        if target.last_edit_key and target.last_edit_key in overrides:
-            snapshot.last_edit_at = merge_latest_timestamp(
-                snapshot.last_edit_at,
-                overrides[target.last_edit_key],
-            )
-        snapshots[target.id] = snapshot
-        summaries.append(
-            MonitorTargetSummary(
-                id=target.id,
-                head_ref=target.head_ref,
-                worktree_path=str(target.worktree_path) if target.worktree_path is not None else None,
-                last_activity_at=snapshot.last_edit_at or snapshot.head_commit_at,
-                summary=snapshot.summary,
-                is_current=target.is_current,
-            )
-        )
-
-    summaries.sort(key=monitor_target_sort_key)
-    effective_target_id = pick_selected_target_id(selected_target_id, summaries)
+    summaries_payload = collect_target_summaries(
+        repo_root,
+        base_override,
+        selected_target_id=selected_target_id,
+        last_edit_overrides=last_edit_overrides,
+    )
+    snapshot = collect_snapshot_for_target(
+        repo_root,
+        base_override,
+        selected_target_id=summaries_payload.selected_target_id,
+        last_edit_overrides=last_edit_overrides,
+    )
     return MonitorOverview(
-        selected_target_id=effective_target_id,
-        targets=summaries,
-        snapshot=snapshots[effective_target_id],
+        selected_target_id=summaries_payload.selected_target_id,
+        targets=summaries_payload.targets,
+        snapshot=snapshot,
     )
 
 
@@ -206,6 +288,70 @@ def collect_target_snapshot(target: MonitorTarget, base_override: str | None = N
         head_ref_override=target.head_ref,
         target_id=target.id,
     )
+
+
+def collect_target_summary(
+    target: MonitorTarget,
+    base_override: str | None = None,
+    *,
+    last_edit_overrides: dict[str, datetime] | None = None,
+) -> MonitorTargetSummary:
+    plan = resolve_snapshot_plan(
+        target.repo_root,
+        base_override,
+        head_ref_override=None if target.worktree_path is not None else target.head_ref,
+        target_id=target.id,
+        worktree_path=target.worktree_path,
+    )
+    tracked = parse_numstat_output(git_numstat(plan.repo_root, plan.merge_base, plan.head_spec))
+    untracked = list(read_untracked_deltas(plan.repo_root)) if plan.include_untracked else []
+    leaves: dict[str, FileDelta] = {delta.path: delta for delta in tracked}
+    for delta in untracked:
+        leaves[delta.path] = delta
+
+    commit_count = count_commits(plan.repo_root, plan.merge_base, head_spec=plan.head_spec)
+    last_edit_at = infer_last_edit_at(plan.repo_root, leaves.values()) if plan.include_untracked else None
+    if last_edit_overrides:
+        if target.last_edit_key and target.last_edit_key in last_edit_overrides:
+            last_edit_at = merge_latest_timestamp(last_edit_at, last_edit_overrides[target.last_edit_key])
+    head_commit_at = resolve_ref_commit_at(plan.repo_root, plan.head_spec)
+    return MonitorTargetSummary(
+        id=plan.target_id,
+        head_ref=plan.head_ref,
+        worktree_path=str(plan.worktree_path) if plan.worktree_path is not None else None,
+        last_activity_at=last_edit_at or head_commit_at,
+        summary=build_summary(leaves.values(), commit_count),
+        is_current=target.is_current,
+    )
+
+
+def build_target_descriptor(target: MonitorTarget) -> MonitorTargetSummary:
+    return MonitorTargetSummary(
+        id=target.id,
+        head_ref=target.head_ref,
+        worktree_path=str(target.worktree_path) if target.worktree_path is not None else None,
+        is_current=target.is_current,
+    )
+
+
+def apply_snapshot_overrides(
+    snapshot: DiffSnapshot,
+    target: MonitorTarget,
+    last_edit_overrides: dict[str, datetime] | None = None,
+) -> DiffSnapshot:
+    if last_edit_overrides and target.last_edit_key and target.last_edit_key in last_edit_overrides:
+        snapshot.last_edit_at = merge_latest_timestamp(
+            snapshot.last_edit_at,
+            last_edit_overrides[target.last_edit_key],
+        )
+    return snapshot
+
+
+def resolve_target(targets: list[MonitorTarget], target_id: str) -> MonitorTarget:
+    for target in targets:
+        if target.id == target_id:
+            return target
+    raise ChurnMonitorError(f"Target '{target_id}' does not exist.", status_code=404)
 
 
 def collect_monitor_targets(repo_root: Path) -> list[MonitorTarget]:
@@ -302,7 +448,7 @@ def build_detached_target_id(worktree_path: Path) -> str:
 
 def pick_selected_target_id(
     selected_target_id: str | None,
-    targets: list[MonitorTargetSummary],
+    targets: list[MonitorTargetSummary | MonitorTarget],
 ) -> str:
     if selected_target_id and any(target.id == selected_target_id for target in targets):
         return selected_target_id
@@ -499,6 +645,11 @@ def collect_commits(repo_root: Path, merge_base: str, *, head_spec: str = "HEAD"
             )
         )
     return commits
+
+
+def count_commits(repo_root: Path, merge_base: str, *, head_spec: str = "HEAD") -> int:
+    raw = git_text(repo_root, "rev-list", "--count", f"{merge_base}..{head_spec}").strip()
+    return int(raw or "0")
 
 
 def parse_numstat_output(raw: bytes) -> list[FileDelta]:

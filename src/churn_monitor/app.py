@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -9,23 +8,21 @@ from threading import Event
 from typing import AsyncIterator, Iterator
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from plotly.offline.offline import get_plotlyjs
 from watchfiles import Change, awatch
 
 from .git_diff import (
     ChurnMonitorError,
+    build_target_descriptor,
     collect_monitor_targets,
-    collect_overview,
-    collect_target_snapshot,
-    merge_latest_timestamp,
-    MonitorTarget,
+    collect_snapshot_for_target,
+    collect_target_summary,
+    collect_targets_payload,
     pick_selected_target_id,
     resolve_repo_root,
     resolve_watch_paths,
 )
-from .models import DiffSnapshot
 
 WATCH_RETRY_MS = 1000
 WATCH_DEBOUNCE_MS = 400
@@ -50,17 +47,23 @@ def create_app(
     *,
     default_base: str | None = None,
     debounce_ms: int = WATCH_DEBOUNCE_MS,
+    client_dir: Path | None = None,
 ) -> FastAPI:
     initial_root = (repo_root or Path.cwd()).resolve()
     try:
         resolved_root = resolve_repo_root(initial_root)
     except ChurnMonitorError:
         resolved_root = initial_root
-    static_dir = Path(__file__).resolve().parent / "static"
+
+    resolved_client_dir = client_dir or (Path(__file__).resolve().parent / "client")
     app = FastAPI(title="Churn Monitor", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.watch_stop_event = Event()
     app.state.last_edit_overrides = {}
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    app.mount(
+        "/assets",
+        StaticFiles(directory=resolved_client_dir / "assets", check_dir=False),
+        name="assets",
+    )
 
     config = {
         "repoRoot": str(resolved_root),
@@ -68,19 +71,27 @@ def create_app(
         "defaultBase": default_base or "",
     }
 
-    @app.get("/", response_class=HTMLResponse)
-    def index() -> HTMLResponse:
-        template = (static_dir / "index.html").read_text(encoding="utf-8")
-        asset_version = resolve_asset_version(static_dir)
-        html = template.replace("__ASSET_VERSION__", asset_version).replace(
-            "__APP_CONFIG__",
-            json.dumps(config, ensure_ascii=True),
-        )
-        return HTMLResponse(content=html)
+    @app.get("/", response_class=HTMLResponse, response_model=None)
+    def index() -> Response:
+        index_path = resolved_client_dir / "index.html"
+        if not index_path.exists():
+            return HTMLResponse(
+                content="Frontend build missing. Run `npm --prefix frontend install` and `npm --prefix frontend run build`.",
+                status_code=503,
+            )
+        return FileResponse(index_path)
 
-    @app.get("/plotly.min.js")
-    def plotly_bundle() -> Response:
-        return Response(content=get_plotlyjs(), media_type="text/javascript")
+    @app.get("/api/config")
+    def api_config() -> dict[str, str]:
+        return config
+
+    @app.get("/api/targets")
+    def targets(target: str | None = Query(default=None)) -> dict[str, object]:
+        try:
+            payload = collect_targets_payload(resolved_root, selected_target_id=target)
+        except ChurnMonitorError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return payload.model_dump(mode="json")
 
     @app.get("/api/snapshot")
     def snapshot(
@@ -89,7 +100,7 @@ def create_app(
     ) -> dict[str, object]:
         resolved_base = base or default_base
         try:
-            overview_model = collect_overview(
+            snapshot_model = collect_snapshot_for_target(
                 resolved_root,
                 resolved_base,
                 selected_target_id=target,
@@ -98,26 +109,23 @@ def create_app(
         except ChurnMonitorError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-        return overview_model.model_dump(mode="json")
+        return snapshot_model.model_dump(mode="json")
 
     @app.get("/api/events")
     async def events(
         request: Request,
         base: str | None = Query(default=None),
-        target: str | None = Query(default=None),
     ) -> StreamingResponse:
         resolved_base = base or default_base
 
         async def event_stream() -> AsyncIterator[str]:
-            selected_target_id = target
             watch_paths = resolve_watch_paths(resolved_root)
-
             first_event = True
+
             try:
                 for event_name, payload in stream_sync_events(
                     resolved_root,
                     resolved_base,
-                    selected_target_id=selected_target_id,
                     last_edit_overrides=app.state.last_edit_overrides,
                 ):
                     if await request.is_disconnected():
@@ -154,6 +162,8 @@ def create_app(
                     app.state.last_edit_overrides.update(
                         detect_target_last_edits(resolved_root, changes),
                     )
+                    yield encode_sse("invalidate", {"at": format_timestamp(datetime.now(tz=UTC))})
+
                     next_watch_paths = resolve_watch_paths(resolved_root)
                     if next_watch_paths != watch_paths:
                         watch_paths = next_watch_paths
@@ -163,7 +173,6 @@ def create_app(
                         for event_name, payload in stream_sync_events(
                             resolved_root,
                             resolved_base,
-                            selected_target_id=selected_target_id,
                             last_edit_overrides=app.state.last_edit_overrides,
                         ):
                             if await request.is_disconnected():
@@ -211,7 +220,7 @@ def snapshot_event(
     last_edit_overrides: dict[str, datetime] | None = None,
 ) -> tuple[str, dict[str, object], str]:
     try:
-        overview_model = collect_overview(
+        snapshot_model = collect_snapshot_for_target(
             repo_root,
             base_ref,
             selected_target_id=selected_target_id,
@@ -222,8 +231,11 @@ def snapshot_event(
         fingerprint = f"problem:{exc.status_code}:{payload['detail']}"
         return "problem", payload, fingerprint
 
-    payload = overview_model.model_dump(mode="json")
-    return "snapshot", payload, build_payload_fingerprint(payload)
+    payload = snapshot_model.model_dump(mode="json")
+    fingerprint_parts = [f"snapshot:{payload['target_id']}:{payload['snapshot_key']}"]
+    if payload["last_edit_at"]:
+        fingerprint_parts.append(payload["last_edit_at"])
+    return "snapshot", payload, "|".join(fingerprint_parts)
 
 
 def stream_sync_events(
@@ -238,33 +250,21 @@ def stream_sync_events(
     if not targets:
         raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
 
-    overrides = last_edit_overrides or {}
     effective_target_id = pick_selected_target_id(selected_target_id, targets)
-    selected_target = next(target for target in targets if target.id == effective_target_id)
-
     yield "targets", {
         "reset": True,
         "selected_target_id": effective_target_id,
-        "targets": [build_target_descriptor(target) for target in targets],
-    }
-
-    selected_snapshot = collect_target_snapshot(selected_target, base_ref)
-    apply_last_edit_override(selected_snapshot, selected_target, overrides)
-    yield "snapshot", selected_snapshot.model_dump(mode="json")
-    yield "targets", {
-        "reset": False,
-        "selected_target_id": effective_target_id,
-        "targets": [build_target_summary_payload(selected_target, selected_snapshot)],
+        "targets": [build_target_descriptor(target).model_dump(mode="json") for target in targets],
     }
 
     pending_targets: list[dict[str, object]] = []
     for target in targets:
-        if target.id == effective_target_id:
-            continue
-
-        snapshot = collect_target_snapshot(target, base_ref)
-        apply_last_edit_override(snapshot, target, overrides)
-        pending_targets.append(build_target_summary_payload(target, snapshot))
+        summary = collect_target_summary(
+            target,
+            base_ref,
+            last_edit_overrides=last_edit_overrides,
+        )
+        pending_targets.append(summary.model_dump(mode="json"))
         if len(pending_targets) >= TARGET_SUMMARY_BATCH_SIZE:
             yield "targets", {
                 "reset": False,
@@ -279,50 +279,6 @@ def stream_sync_events(
             "selected_target_id": effective_target_id,
             "targets": pending_targets,
         }
-
-
-def build_target_descriptor(target: MonitorTarget) -> dict[str, object]:
-    return {
-        "id": target.id,
-        "head_ref": target.head_ref,
-        "worktree_path": str(target.worktree_path) if target.worktree_path is not None else None,
-        "last_activity_at": None,
-        "summary": None,
-        "is_current": target.is_current,
-    }
-
-
-def build_target_summary_payload(
-    target: MonitorTarget,
-    snapshot: DiffSnapshot,
-) -> dict[str, object]:
-    snapshot_payload = snapshot.model_dump(mode="json")
-    return {
-        "id": snapshot_payload["target_id"],
-        "head_ref": snapshot_payload["head_ref"],
-        "worktree_path": snapshot_payload["worktree_path"],
-        "last_activity_at": snapshot_payload["last_edit_at"] or snapshot_payload["head_commit_at"],
-        "summary": snapshot_payload["summary"],
-        "is_current": target.is_current,
-    }
-
-
-def apply_last_edit_override(
-    snapshot: DiffSnapshot,
-    target: MonitorTarget,
-    overrides: dict[str, datetime],
-) -> None:
-    if target.last_edit_key and target.last_edit_key in overrides:
-        snapshot.last_edit_at = merge_latest_timestamp(
-            snapshot.last_edit_at,
-            overrides[target.last_edit_key],
-        )
-
-
-def build_payload_fingerprint(payload: dict[str, object]) -> str:
-    digest = hashlib.sha1(usedforsecurity=False)
-    digest.update(json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8"))
-    return digest.hexdigest()[:16]
 
 
 def encode_sse(event: str, payload: dict[str, object], *, retry_ms: int | None = None) -> str:
@@ -397,6 +353,5 @@ def detect_last_edit_at(changes: set[tuple[Change, str]]) -> datetime | None:
     return datetime.fromtimestamp(latest_mtime, tz=UTC)
 
 
-def resolve_asset_version(static_dir: Path) -> str:
-    latest_mtime_ns = max(path.stat().st_mtime_ns for path in static_dir.iterdir() if path.is_file())
-    return str(latest_mtime_ns)
+def format_timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
