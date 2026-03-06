@@ -11,7 +11,14 @@ from fastapi.testclient import TestClient
 
 from churn_monitor.app import create_app, encode_sse, snapshot_event, stream_sync_events
 from churn_monitor.cli import signal_watchers_to_stop
-from churn_monitor.git_diff import ChurnMonitorError, collect_overview, collect_snapshot, resolve_base_ref
+from churn_monitor.git_diff import (
+    ChurnMonitorError,
+    collect_overview,
+    collect_snapshot,
+    collect_snapshot_for_target,
+    collect_targets_payload,
+    resolve_base_ref,
+)
 
 
 def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -330,3 +337,57 @@ def test_api_snapshot_returns_selected_branch_snapshot(repo: Path) -> None:
     assert payload["target_id"] == "branch:feature"
     assert payload["head_ref"] == "feature"
     assert payload["summary"]["changed_files"] == 1
+
+
+def test_collect_targets_payload_limits_branch_only_targets(repo: Path) -> None:
+    for index in range(1, 5):
+        branch = f"feature-{index}"
+        git(repo, "checkout", "-b", branch)
+        write(repo, f"{branch}.txt", f"{branch}\n".encode("utf-8"))
+        git(repo, "add", f"{branch}.txt")
+        git(
+            repo,
+            "commit",
+            "-m",
+            f"feat: add {branch}",
+            env={
+                "GIT_AUTHOR_DATE": f"2026-03-0{index}T10:00:00Z",
+                "GIT_COMMITTER_DATE": f"2026-03-0{index}T10:00:00Z",
+            },
+        )
+
+    git(repo, "checkout", "main")
+
+    payload = collect_targets_payload(repo, branch_limit=2)
+
+    assert payload.selected_target_id == "branch:main"
+    assert [target.head_ref for target in payload.targets] == ["main", "feature-4", "feature-3"]
+
+
+def test_collect_snapshot_for_target_includes_selected_branch_beyond_limit(repo: Path) -> None:
+    for index in range(1, 4):
+        branch = f"feature-{index}"
+        git(repo, "checkout", "-b", branch)
+        write(repo, f"{branch}.txt", f"{branch}\n".encode("utf-8"))
+        git(repo, "add", f"{branch}.txt")
+        git(
+            repo,
+            "commit",
+            "-m",
+            f"feat: add {branch}",
+            env={
+                "GIT_AUTHOR_DATE": f"2026-03-0{index}T10:00:00Z",
+                "GIT_COMMITTER_DATE": f"2026-03-0{index}T10:00:00Z",
+            },
+        )
+
+    git(repo, "checkout", "main")
+
+    snapshot = collect_snapshot_for_target(
+        repo,
+        selected_target_id="branch:feature-1",
+        branch_limit=1,
+    )
+
+    assert snapshot.target_id == "branch:feature-1"
+    assert snapshot.head_ref == "feature-1"

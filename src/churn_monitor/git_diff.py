@@ -194,8 +194,13 @@ def collect_targets_payload(
     repo_root: Path,
     *,
     selected_target_id: str | None = None,
+    branch_limit: int | None = None,
 ) -> MonitorTargetsPayload:
-    targets = collect_monitor_targets(repo_root)
+    targets = collect_monitor_targets(
+        repo_root,
+        selected_target_id=selected_target_id,
+        branch_limit=branch_limit,
+    )
     if not targets:
         raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
 
@@ -212,8 +217,13 @@ def collect_target_summaries(
     *,
     selected_target_id: str | None = None,
     last_edit_overrides: dict[str, datetime] | None = None,
+    branch_limit: int | None = None,
 ) -> MonitorTargetsPayload:
-    targets = collect_monitor_targets(repo_root)
+    targets = collect_monitor_targets(
+        repo_root,
+        selected_target_id=selected_target_id,
+        branch_limit=branch_limit,
+    )
     if not targets:
         raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
 
@@ -236,8 +246,13 @@ def collect_snapshot_for_target(
     *,
     selected_target_id: str | None = None,
     last_edit_overrides: dict[str, datetime] | None = None,
+    branch_limit: int | None = None,
 ) -> DiffSnapshot:
-    targets = collect_monitor_targets(repo_root)
+    targets = collect_monitor_targets(
+        repo_root,
+        selected_target_id=selected_target_id,
+        branch_limit=branch_limit,
+    )
     if not targets:
         raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
 
@@ -253,18 +268,21 @@ def collect_overview(
     *,
     selected_target_id: str | None = None,
     last_edit_overrides: dict[str, datetime] | None = None,
+    branch_limit: int | None = None,
 ) -> MonitorOverview:
     summaries_payload = collect_target_summaries(
         repo_root,
         base_override,
         selected_target_id=selected_target_id,
         last_edit_overrides=last_edit_overrides,
+        branch_limit=branch_limit,
     )
     snapshot = collect_snapshot_for_target(
         repo_root,
         base_override,
         selected_target_id=summaries_payload.selected_target_id,
         last_edit_overrides=last_edit_overrides,
+        branch_limit=branch_limit,
     )
     return MonitorOverview(
         selected_target_id=summaries_payload.selected_target_id,
@@ -354,7 +372,12 @@ def resolve_target(targets: list[MonitorTarget], target_id: str) -> MonitorTarge
     raise ChurnMonitorError(f"Target '{target_id}' does not exist.", status_code=404)
 
 
-def collect_monitor_targets(repo_root: Path) -> list[MonitorTarget]:
+def collect_monitor_targets(
+    repo_root: Path,
+    *,
+    selected_target_id: str | None = None,
+    branch_limit: int | None = None,
+) -> list[MonitorTarget]:
     resolved_root = resolve_repo_root(repo_root)
     worktree_entries = list_worktrees(resolved_root)
 
@@ -378,18 +401,23 @@ def collect_monitor_targets(repo_root: Path) -> list[MonitorTarget]:
         if not entry.is_detached:
             active_branches.add(entry.head_ref)
 
+    branch_count = 0
     for branch in list_local_branches(resolved_root):
         if branch in active_branches:
             continue
+        target_id = build_branch_target_id(branch)
+        if branch_limit is not None and branch_count >= branch_limit and target_id != selected_target_id:
+            continue
         targets.append(
             MonitorTarget(
-                id=build_branch_target_id(branch),
+                id=target_id,
                 head_ref=branch,
                 repo_root=resolved_root,
                 worktree_path=None,
                 is_current=False,
             )
         )
+        branch_count += 1
 
     return targets
 

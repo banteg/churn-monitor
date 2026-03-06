@@ -28,6 +28,7 @@ WATCH_RETRY_MS = 1000
 WATCH_DEBOUNCE_MS = 400
 WATCH_KEEPALIVE_MS = 15000
 TARGET_SUMMARY_BATCH_SIZE = 12
+DEFAULT_BRANCH_TARGET_LIMIT = 20
 IGNORED_WATCH_PARTS = {
     ".hypothesis",
     ".idea",
@@ -69,6 +70,7 @@ def create_app(
         "repoRoot": str(resolved_root),
         "homeDir": str(Path.home()),
         "defaultBase": default_base or "",
+        "defaultBranchLimit": DEFAULT_BRANCH_TARGET_LIMIT,
     }
 
     @app.get("/", response_class=HTMLResponse, response_model=None)
@@ -82,13 +84,20 @@ def create_app(
         return FileResponse(index_path)
 
     @app.get("/api/config")
-    def api_config() -> dict[str, str]:
+    def api_config() -> dict[str, str | int]:
         return config
 
     @app.get("/api/targets")
-    def targets(target: str | None = Query(default=None)) -> dict[str, object]:
+    def targets(
+        target: str | None = Query(default=None),
+        limit: int | None = Query(default=DEFAULT_BRANCH_TARGET_LIMIT, ge=1),
+    ) -> dict[str, object]:
         try:
-            payload = collect_targets_payload(resolved_root, selected_target_id=target)
+            payload = collect_targets_payload(
+                resolved_root,
+                selected_target_id=target,
+                branch_limit=limit,
+            )
         except ChurnMonitorError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         return payload.model_dump(mode="json")
@@ -105,6 +114,7 @@ def create_app(
                 resolved_base,
                 selected_target_id=target,
                 last_edit_overrides=app.state.last_edit_overrides,
+                branch_limit=DEFAULT_BRANCH_TARGET_LIMIT,
             )
         except ChurnMonitorError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -115,6 +125,7 @@ def create_app(
     async def events(
         request: Request,
         base: str | None = Query(default=None),
+        limit: int | None = Query(default=DEFAULT_BRANCH_TARGET_LIMIT, ge=1),
     ) -> StreamingResponse:
         resolved_base = base or default_base
 
@@ -127,6 +138,7 @@ def create_app(
                     resolved_root,
                     resolved_base,
                     last_edit_overrides=app.state.last_edit_overrides,
+                    branch_limit=limit,
                 ):
                     if await request.is_disconnected():
                         return
@@ -174,6 +186,7 @@ def create_app(
                             resolved_root,
                             resolved_base,
                             last_edit_overrides=app.state.last_edit_overrides,
+                            branch_limit=limit,
                         ):
                             if await request.is_disconnected():
                                 return
@@ -244,9 +257,14 @@ def stream_sync_events(
     *,
     selected_target_id: str | None = None,
     last_edit_overrides: dict[str, datetime] | None = None,
+    branch_limit: int | None = None,
 ) -> Iterator[tuple[str, dict[str, object]]]:
     resolved_root = resolve_repo_root(repo_root)
-    targets = collect_monitor_targets(resolved_root)
+    targets = collect_monitor_targets(
+        resolved_root,
+        selected_target_id=selected_target_id,
+        branch_limit=branch_limit,
+    )
     if not targets:
         raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
 
