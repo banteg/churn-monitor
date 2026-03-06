@@ -1,6 +1,6 @@
-const config = window.DIFF_TREEMAP_CONFIG ?? {};
-const STORAGE_KEY_TREEMAP_METRIC = "diff-treemap.metric";
-const STORAGE_KEY_COMMIT_ORDER = "diff-treemap.commit-order";
+const config = window.CHURN_MONITOR_CONFIG ?? {};
+const STORAGE_KEY_TREEMAP_METRIC = "churn-monitor.metric";
+const STORAGE_KEY_COMMIT_ORDER = "churn-monitor.commit-order";
 
 function loadTreemapMetric() {
   try {

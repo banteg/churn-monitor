@@ -12,7 +12,7 @@ from .app import create_app
 GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 1
 
 
-class DiffTreemapServer(uvicorn.Server):
+class ChurnMonitorServer(uvicorn.Server):
     def __init__(self, config: uvicorn.Config, app: FastAPI) -> None:
         super().__init__(config)
         self._app = app
@@ -29,7 +29,7 @@ def signal_watchers_to_stop(app: FastAPI) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Realtime treemap view of a git diff from base.")
+    parser = argparse.ArgumentParser(description="Realtime churn monitor for a git diff from base.")
     parser.add_argument("--base", help="Explicit base ref to diff against.")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind the local server to.")
     parser.add_argument("--port", type=int, default=8000, help="Port for the local server.")
@@ -57,7 +57,7 @@ def main() -> None:
         port=args.port,
         timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
     )
-    server = DiffTreemapServer(config, app)
+    server = ChurnMonitorServer(config, app)
     try:
         server.run()
     except KeyboardInterrupt:

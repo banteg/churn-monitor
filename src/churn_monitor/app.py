@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from plotly.offline.offline import get_plotlyjs
 from watchfiles import Change, awatch
 
-from .git_diff import DiffTreemapError, collect_snapshot, resolve_repo_root, resolve_watch_paths
+from .git_diff import ChurnMonitorError, collect_snapshot, resolve_repo_root, resolve_watch_paths
 
 WATCH_RETRY_MS = 1000
 WATCH_DEBOUNCE_MS = 400
@@ -41,11 +41,11 @@ def create_app(
     initial_root = (repo_root or Path.cwd()).resolve()
     try:
         resolved_root = resolve_repo_root(initial_root)
-    except DiffTreemapError:
+    except ChurnMonitorError:
         resolved_root = initial_root
     watch_paths = resolve_watch_paths(resolved_root)
     static_dir = Path(__file__).resolve().parent / "static"
-    app = FastAPI(title="Diff Treemap", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app = FastAPI(title="Churn Monitor", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.watch_stop_event = Event()
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -75,7 +75,7 @@ def create_app(
         resolved_base = base or default_base
         try:
             snapshot_model = collect_snapshot(resolved_root, resolved_base)
-        except DiffTreemapError as exc:
+        except ChurnMonitorError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
         return snapshot_model.model_dump(mode="json")
@@ -156,7 +156,7 @@ def snapshot_event(
 ) -> tuple[str, dict[str, object], str]:
     try:
         snapshot_model = collect_snapshot(repo_root, base_ref)
-    except DiffTreemapError as exc:
+    except ChurnMonitorError as exc:
         payload = {"status": exc.status_code, "detail": str(exc)}
         fingerprint = f"problem:{exc.status_code}:{payload['detail']}"
         return "problem", payload, fingerprint

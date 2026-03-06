@@ -19,7 +19,7 @@ AUTODETECT_BASE_CANDIDATES: Final[tuple[str, ...]] = (
 )
 
 
-class DiffTreemapError(RuntimeError):
+class ChurnMonitorError(RuntimeError):
     def __init__(self, message: str, *, status_code: int = 409) -> None:
         super().__init__(message)
         self.status_code = status_code
@@ -48,14 +48,14 @@ def collect_snapshot(repo_root: Path, base_override: str | None = None) -> DiffS
     repo_root = resolve_repo_root(repo_root)
 
     if not head_exists(repo_root):
-        raise DiffTreemapError("No commits found yet. Create the first commit before diffing.")
+        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
 
     head_ref = resolve_head_ref(repo_root)
     base_ref = resolve_base_ref(repo_root, base_override)
     try:
         merge_base = git_text(repo_root, "merge-base", "HEAD", base_ref).strip()
-    except DiffTreemapError as exc:
-        raise DiffTreemapError(
+    except ChurnMonitorError as exc:
+        raise ChurnMonitorError(
             f"Unable to compute a merge base between HEAD and {base_ref}.",
             status_code=409,
         ) from exc
@@ -98,8 +98,8 @@ def resolve_repo_root(repo_root: Path) -> Path:
     repo_root = repo_root.resolve()
     try:
         actual_root = git_text(repo_root, "rev-parse", "--show-toplevel").strip()
-    except DiffTreemapError as exc:
-        raise DiffTreemapError("This directory is not inside a Git repository.", status_code=404) from exc
+    except ChurnMonitorError as exc:
+        raise ChurnMonitorError("This directory is not inside a Git repository.", status_code=404) from exc
     return Path(actual_root).resolve()
 
 
@@ -113,7 +113,7 @@ def resolve_watch_paths(repo_root: Path) -> tuple[Path, ...]:
     ):
         try:
             candidate = resolve_git_path(repo_root, *args)
-        except DiffTreemapError:
+        except ChurnMonitorError:
             continue
 
         if candidate not in paths:
@@ -125,7 +125,7 @@ def resolve_watch_paths(repo_root: Path) -> tuple[Path, ...]:
 def head_exists(repo_root: Path) -> bool:
     try:
         git_text(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
-    except DiffTreemapError:
+    except ChurnMonitorError:
         return False
     return True
 
@@ -133,7 +133,7 @@ def head_exists(repo_root: Path) -> bool:
 def resolve_head_ref(repo_root: Path) -> str:
     try:
         return git_text(repo_root, "symbolic-ref", "--quiet", "--short", "HEAD").strip()
-    except DiffTreemapError:
+    except ChurnMonitorError:
         return git_text(repo_root, "rev-parse", "--short", "HEAD").strip()
 
 
@@ -141,8 +141,8 @@ def resolve_base_ref(repo_root: Path, base_override: str | None = None) -> str:
     if base_override:
         try:
             verify_ref(repo_root, base_override)
-        except DiffTreemapError as exc:
-            raise DiffTreemapError(
+        except ChurnMonitorError as exc:
+            raise ChurnMonitorError(
                 f"Base ref '{base_override}' does not resolve to a commit.",
                 status_code=404,
             ) from exc
@@ -155,11 +155,11 @@ def resolve_base_ref(repo_root: Path, base_override: str | None = None) -> str:
         seen.add(candidate)
         try:
             verify_ref(repo_root, candidate)
-        except DiffTreemapError:
+        except ChurnMonitorError:
             continue
         return candidate
 
-    raise DiffTreemapError(
+    raise ChurnMonitorError(
         "Unable to resolve a base ref. Pass --base or use ?base=<ref>.",
         status_code=404,
     )
@@ -168,7 +168,7 @@ def resolve_base_ref(repo_root: Path, base_override: str | None = None) -> str:
 def iter_base_candidates(repo_root: Path) -> Iterable[str]:
     try:
         symbolic = git_text(repo_root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD").strip()
-    except DiffTreemapError:
+    except ChurnMonitorError:
         symbolic = ""
 
     if symbolic:
@@ -208,7 +208,7 @@ def run_git(repo_root: Path, *args: str) -> bytes:
     )
     if completed.returncode != 0:
         message = completed.stderr.decode("utf-8", errors="replace").strip() or "Git command failed."
-        raise DiffTreemapError(message)
+        raise ChurnMonitorError(message)
     return completed.stdout
 
 

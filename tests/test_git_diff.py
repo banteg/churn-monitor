@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from diff_treemap.app import create_app, encode_sse, snapshot_event
-from diff_treemap.cli import signal_watchers_to_stop
-from diff_treemap.git_diff import DiffTreemapError, collect_snapshot, resolve_base_ref
+from churn_monitor.app import create_app, encode_sse, snapshot_event
+from churn_monitor.cli import signal_watchers_to_stop
+from churn_monitor.git_diff import ChurnMonitorError, collect_snapshot, resolve_base_ref
 
 
 def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -137,7 +137,7 @@ def test_index_includes_versioned_static_assets(repo: Path) -> None:
 def test_collect_snapshot_requires_resolvable_base(repo: Path) -> None:
     git(repo, "checkout", "-b", "feature")
 
-    with pytest.raises(DiffTreemapError):
+    with pytest.raises(ChurnMonitorError):
         collect_snapshot(repo, "missing-branch")
 
 

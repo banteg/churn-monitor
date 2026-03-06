@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "diff-treemap"
+name = "churn-monitor"
 version = "0.1.0"
-description = "Realtime local web treemap for git branch diffs."
+description = "Realtime local churn monitor for git branch diffs."
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.116.0,<1.0.0",
@@ -22,10 +22,10 @@ dev = [
 ]
 
 [project.scripts]
-diff-treemap = "diff_treemap.cli:main"
+churn-monitor = "churn_monitor.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/diff_treemap"]
+packages = ["src/churn_monitor"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -33,4 +33,3 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-
