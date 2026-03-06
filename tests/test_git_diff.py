@@ -6,6 +6,7 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -40,6 +41,13 @@ def write(repo: Path, relative: str, content: bytes) -> None:
     path = repo / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
+
+
+def collect_stream_events(repo: Path, base: str | None) -> list[tuple[str, dict[str, object]]]:
+    async def runner() -> list[tuple[str, dict[str, object]]]:
+        return [event async for event in stream_sync_events(repo, base)]
+
+    return anyio.run(runner)
 
 
 @pytest.fixture()
@@ -262,17 +270,21 @@ def test_stream_sync_events_emits_targets_updates(repo: Path) -> None:
     git(repo, "add", "feature.txt")
     git(repo, "commit", "-m", "feat: feature work")
 
-    events = list(stream_sync_events(repo, None))
+    events = collect_stream_events(repo, None)
 
     assert events[0][0] == "targets"
     assert events[0][1]["reset"] is True
     assert events[0][1]["selected_target_id"] == "branch:feature"
     assert events[0][1]["targets"][0]["summary"] is None
 
-    assert events[1][0] == "targets"
-    assert events[1][1]["reset"] is False
+    summary_targets = [
+        target
+        for event_name, payload in events[1:]
+        if event_name == "targets" and payload["reset"] is False
+        for target in payload["targets"]
+    ]
     feature_target = next(
-        target for target in events[1][1]["targets"] if target["id"] == "branch:feature"
+        target for target in summary_targets if target["id"] == "branch:feature"
     )
     assert feature_target["summary"]["commit_count"] == 1
 

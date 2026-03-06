@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
-from typing import AsyncIterator, Iterator
+from typing import AsyncIterator
 
+import anyio
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +15,7 @@ from watchfiles import Change, awatch
 
 from .git_diff import (
     ChurnMonitorError,
+    MonitorTarget,
     build_target_descriptor,
     collect_monitor_targets,
     collect_snapshot_for_target,
@@ -28,6 +30,7 @@ WATCH_RETRY_MS = 1000
 WATCH_DEBOUNCE_MS = 400
 WATCH_KEEPALIVE_MS = 15000
 TARGET_SUMMARY_BATCH_SIZE = 12
+TARGET_SUMMARY_CONCURRENCY = 8
 DEFAULT_BRANCH_TARGET_LIMIT = 20
 IGNORED_WATCH_PARTS = {
     ".hypothesis",
@@ -134,7 +137,7 @@ def create_app(
             first_event = True
 
             try:
-                for event_name, payload in stream_sync_events(
+                async for event_name, payload in stream_sync_events(
                     resolved_root,
                     resolved_base,
                     last_edit_overrides=app.state.last_edit_overrides,
@@ -182,7 +185,7 @@ def create_app(
                         restart_watch = True
 
                     try:
-                        for event_name, payload in stream_sync_events(
+                        async for event_name, payload in stream_sync_events(
                             resolved_root,
                             resolved_base,
                             last_edit_overrides=app.state.last_edit_overrides,
@@ -258,45 +261,84 @@ def stream_sync_events(
     selected_target_id: str | None = None,
     last_edit_overrides: dict[str, datetime] | None = None,
     branch_limit: int | None = None,
-) -> Iterator[tuple[str, dict[str, object]]]:
-    resolved_root = resolve_repo_root(repo_root)
-    targets = collect_monitor_targets(
-        resolved_root,
-        selected_target_id=selected_target_id,
-        branch_limit=branch_limit,
-    )
-    if not targets:
-        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
-
-    effective_target_id = pick_selected_target_id(selected_target_id, targets)
-    yield "targets", {
-        "reset": True,
-        "selected_target_id": effective_target_id,
-        "targets": [build_target_descriptor(target).model_dump(mode="json") for target in targets],
-    }
-
-    pending_targets: list[dict[str, object]] = []
-    for target in targets:
-        summary = collect_target_summary(
-            target,
-            base_ref,
-            last_edit_overrides=last_edit_overrides,
+) -> AsyncIterator[tuple[str, dict[str, object]]]:
+    async def iterator() -> AsyncIterator[tuple[str, dict[str, object]]]:
+        resolved_root = resolve_repo_root(repo_root)
+        targets = collect_monitor_targets(
+            resolved_root,
+            selected_target_id=selected_target_id,
+            branch_limit=branch_limit,
         )
-        pending_targets.append(summary.model_dump(mode="json"))
-        if len(pending_targets) >= TARGET_SUMMARY_BATCH_SIZE:
-            yield "targets", {
-                "reset": False,
-                "selected_target_id": effective_target_id,
-                "targets": pending_targets,
-            }
-            pending_targets = []
+        if not targets:
+            raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
 
-    if pending_targets:
+        effective_target_id = pick_selected_target_id(selected_target_id, targets)
         yield "targets", {
-            "reset": False,
+            "reset": True,
             "selected_target_id": effective_target_id,
-            "targets": pending_targets,
+            "targets": [build_target_descriptor(target).model_dump(mode="json") for target in targets],
         }
+
+        async for payload in stream_target_summary_payloads(
+            targets,
+            base_ref,
+            selected_target_id=effective_target_id,
+            last_edit_overrides=last_edit_overrides,
+        ):
+            yield "targets", payload
+
+    return iterator()
+
+
+async def stream_target_summary_payloads(
+    targets: list[MonitorTarget],
+    base_ref: str | None,
+    *,
+    selected_target_id: str,
+    last_edit_overrides: dict[str, datetime] | None = None,
+    concurrency: int = TARGET_SUMMARY_CONCURRENCY,
+) -> AsyncIterator[dict[str, object]]:
+    send_stream, receive_stream = anyio.create_memory_object_stream[dict[str, object]](
+        max_buffer_size=max(concurrency, 1),
+    )
+    limiter = anyio.CapacityLimiter(total_tokens=max(concurrency, 1))
+
+    async def run_summary(target: MonitorTarget, sender: anyio.abc.ObjectSendStream[dict[str, object]]) -> None:
+        async with sender:
+            summary = await anyio.to_thread.run_sync(
+                lambda: collect_target_summary(
+                    target,
+                    base_ref,
+                    last_edit_overrides=last_edit_overrides,
+                ),
+                limiter=limiter,
+            )
+            await sender.send(summary.model_dump(mode="json"))
+
+    async def produce_summaries() -> None:
+        async with send_stream:
+            async with anyio.create_task_group() as task_group:
+                for target in targets:
+                    task_group.start_soon(run_summary, target, send_stream.clone())
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(produce_summaries)
+        async with receive_stream:
+            async for first in receive_stream:
+                batch = [first]
+                while len(batch) < TARGET_SUMMARY_BATCH_SIZE:
+                    try:
+                        batch.append(receive_stream.receive_nowait())
+                    except anyio.WouldBlock:
+                        break
+                    except anyio.EndOfStream:
+                        break
+
+                yield {
+                    "reset": False,
+                    "selected_target_id": selected_target_id,
+                    "targets": batch,
+                }
 
 
 def encode_sse(event: str, payload: dict[str, object], *, retry_ms: int | None = None) -> str:
