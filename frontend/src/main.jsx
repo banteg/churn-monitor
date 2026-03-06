@@ -8,7 +8,7 @@ import "./styles.css";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: "static",
+      staleTime: Infinity,
       gcTime: Infinity,
       refetchInterval: false,
       refetchIntervalInBackground: false,
