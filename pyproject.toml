@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "diff-treemap"
+version = "0.1.0"
+description = "Realtime local web treemap for git branch diffs."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.116.0,<1.0.0",
+  "plotly>=6.0.0,<7.0.0",
+  "uvicorn>=0.35.0,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0,<1.0.0",
+  "pytest>=8.4.0,<9.0.0",
+  "ruff>=0.11.0,<1.0.0",
+]
+
+[project.scripts]
+diff-treemap = "diff_treemap.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/diff_treemap"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+

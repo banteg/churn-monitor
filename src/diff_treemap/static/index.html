@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Diff Treemap</title>
+    <link rel="stylesheet" href="/static/app.css">
+    <script>
+      window.DIFF_TREEMAP_CONFIG = __APP_CONFIG__;
+    </script>
+    <script src="/plotly.min.js"></script>
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Realtime Git Diff Treemap</p>
+          <h1>Track where churn lands before it sprawls.</h1>
+          <p class="lede">
+            Area shows total touched lines. Color shows net growth or cuts, so
+            you can spot code removal in one area and test growth in another at a glance.
+          </p>
+        </div>
+        <form id="base-form" class="controls">
+          <label class="field">
+            <span>Base ref</span>
+            <input id="base-input" name="base" type="text" placeholder="origin/main or main">
+          </label>
+          <button type="submit">Apply</button>
+        </form>
+      </header>
+
+      <section class="summary-grid">
+        <article class="metric-card">
+          <span>Changed files</span>
+          <strong id="changed-files">0</strong>
+        </article>
+        <article class="metric-card">
+          <span>Added lines</span>
+          <strong id="added-lines">0</strong>
+        </article>
+        <article class="metric-card">
+          <span>Deleted lines</span>
+          <strong id="deleted-lines">0</strong>
+        </article>
+        <article class="metric-card">
+          <span>Net lines</span>
+          <strong id="net-lines">0</strong>
+        </article>
+      </section>
+
+      <section class="info-bar">
+        <div>
+          <span class="label">Repo</span>
+          <span id="repo-root">-</span>
+        </div>
+        <div>
+          <span class="label">Branch</span>
+          <span id="head-ref">-</span>
+        </div>
+        <div>
+          <span class="label">Base</span>
+          <span id="base-ref">-</span>
+        </div>
+        <div>
+          <span class="label">Merge base</span>
+          <span id="merge-base">-</span>
+        </div>
+        <div>
+          <span class="label">Updated</span>
+          <span id="generated-at">-</span>
+        </div>
+      </section>
+
+      <section class="content-grid">
+        <article class="panel treemap-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-title">Treemap</p>
+              <p class="panel-subtitle">Area = churn, color = net delta</p>
+            </div>
+            <div id="status-pill" class="status-pill">Loading</div>
+          </div>
+          <div id="treemap" class="treemap"></div>
+        </article>
+
+        <aside class="side-stack">
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-title">Top Additions</p>
+                <p class="panel-subtitle">Files with the biggest net increase</p>
+              </div>
+            </div>
+            <ol id="top-additions" class="change-list"></ol>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-title">Top Cuts</p>
+                <p class="panel-subtitle">Files with the biggest net decrease</p>
+              </div>
+            </div>
+            <ol id="top-deletions" class="change-list"></ol>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-title">Notes</p>
+                <p class="panel-subtitle">How to read the map</p>
+              </div>
+            </div>
+            <ul class="notes-list">
+              <li>Blue-green tiles trend positive. Coral tiles trend negative.</li>
+              <li>Binary changes are shown with a minimum size so they stay visible.</li>
+              <li>Click a directory to zoom into its local balance of cuts and additions.</li>
+            </ul>
+          </article>
+        </aside>
+      </section>
+    </div>
+  </body>
+</html>
