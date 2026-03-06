@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from .models import DiffNode, DiffSnapshot, SnapshotSummary
+from .models import CommitEntry, DiffNode, DiffSnapshot, SnapshotSummary
 
 AUTODETECT_BASE_CANDIDATES: Final[tuple[str, ...]] = (
     "origin/HEAD",
@@ -62,14 +62,23 @@ def collect_snapshot(repo_root: Path, base_override: str | None = None) -> DiffS
 
     tracked = parse_numstat_output(git_bytes(repo_root, "diff", "--numstat", "-z", "-M", merge_base))
     untracked = list(read_untracked_deltas(repo_root))
+    commits = collect_commits(repo_root, merge_base)
 
     leaves: dict[str, FileDelta] = {delta.path: delta for delta in tracked}
     for delta in untracked:
         leaves[delta.path] = delta
 
     nodes = build_nodes(repo_root, leaves.values())
-    summary = build_summary(leaves.values())
-    snapshot_key = compute_snapshot_key(repo_root, head_ref, base_ref, merge_base, leaves.values())
+    summary = build_summary(leaves.values(), len(commits))
+    snapshot_key = compute_snapshot_key(
+        repo_root,
+        head_ref,
+        base_ref,
+        merge_base,
+        leaves.values(),
+        commits,
+    )
+    last_edit_at = infer_last_edit_at(repo_root, leaves.values())
 
     return DiffSnapshot(
         repo_root=str(repo_root),
@@ -77,8 +86,10 @@ def collect_snapshot(repo_root: Path, base_override: str | None = None) -> DiffS
         base_ref=base_ref,
         merge_base=merge_base,
         snapshot_key=snapshot_key,
+        last_edit_at=last_edit_at,
         generated_at=datetime.now(tz=UTC),
         summary=summary,
+        commits=commits,
         nodes=nodes,
     )
 
@@ -199,6 +210,28 @@ def run_git(repo_root: Path, *args: str) -> bytes:
         message = completed.stderr.decode("utf-8", errors="replace").strip() or "Git command failed."
         raise DiffTreemapError(message)
     return completed.stdout
+
+
+def collect_commits(repo_root: Path, merge_base: str) -> list[CommitEntry]:
+    raw = git_text(
+        repo_root,
+        "log",
+        "--format=%H%x1f%h%x1f%s%x1e",
+        f"{merge_base}..HEAD",
+    )
+    commits: list[CommitEntry] = []
+    for record in raw.split("\x1e"):
+        if not record.strip():
+            continue
+        sha, short_sha, subject = record.rstrip("\n").split("\x1f", maxsplit=2)
+        commits.append(
+            CommitEntry(
+                sha=sha,
+                short_sha=short_sha,
+                subject=subject,
+            )
+        )
+    return commits
 
 
 def parse_numstat_output(raw: bytes) -> list[FileDelta]:
@@ -371,11 +404,12 @@ def sort_nodes(nodes: dict[str, dict[str, object]]) -> list[str]:
     return sorted(nodes, key=node_key)
 
 
-def build_summary(leaves: Iterable[FileDelta]) -> SnapshotSummary:
+def build_summary(leaves: Iterable[FileDelta], commit_count: int) -> SnapshotSummary:
     items = list(leaves)
     added = sum(item.added_lines for item in items)
     deleted = sum(item.deleted_lines for item in items)
     return SnapshotSummary(
+        commit_count=commit_count,
         added_lines=added,
         deleted_lines=deleted,
         net_lines=added - deleted,
@@ -390,6 +424,7 @@ def compute_snapshot_key(
     base_ref: str,
     merge_base: str,
     leaves: Iterable[FileDelta],
+    commits: Iterable[CommitEntry],
 ) -> str:
     digest = hashlib.sha1(usedforsecurity=False)
     digest.update(str(repo_root).encode("utf-8"))
@@ -414,4 +449,26 @@ def compute_snapshot_key(
             digest.update(leaf.previous_path.encode("utf-8", errors="surrogateescape"))
         digest.update(b"\0")
 
+    for commit in commits:
+        digest.update(commit.sha.encode("ascii"))
+        digest.update(b"\0")
+
     return digest.hexdigest()[:12]
+
+
+def infer_last_edit_at(repo_root: Path, leaves: Iterable[FileDelta]) -> datetime | None:
+    latest_mtime: float | None = None
+    for leaf in leaves:
+        path = repo_root / leaf.path
+        if not path.exists():
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        latest_mtime = mtime if latest_mtime is None else max(latest_mtime, mtime)
+
+    if latest_mtime is None:
+        return None
+
+    return datetime.fromtimestamp(latest_mtime, tz=UTC)

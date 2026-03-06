@@ -1,24 +1,42 @@
 const config = window.DIFF_TREEMAP_CONFIG ?? {};
 const state = {
+  lastEditMs: null,
   snapshotKey: null,
+  relativeTimer: null,
   stream: null,
 };
 
 const els = {
   changedFiles: document.getElementById("changed-files"),
+  commitCount: document.getElementById("commit-count"),
   addedLines: document.getElementById("added-lines"),
   deletedLines: document.getElementById("deleted-lines"),
   netLines: document.getElementById("net-lines"),
   repoRoot: document.getElementById("repo-root"),
   headRef: document.getElementById("head-ref"),
   baseRef: document.getElementById("base-ref"),
-  mergeBase: document.getElementById("merge-base"),
-  generatedAt: document.getElementById("generated-at"),
+  lastEdit: document.getElementById("last-edit"),
   statusPill: document.getElementById("status-pill"),
+  commits: document.getElementById("commit-list"),
   additions: document.getElementById("top-additions"),
   deletions: document.getElementById("top-deletions"),
   treemap: document.getElementById("treemap"),
 };
+
+const TREEMAP_COLORSCALE = [
+  [0.0, "#b65438"],
+  [1 / 6, "#b65438"],
+  [1 / 6, "#d88970"],
+  [2 / 6, "#d88970"],
+  [2 / 6, "#eadfd2"],
+  [0.5, "#eadfd2"],
+  [0.5, "#dcebe6"],
+  [4 / 6, "#dcebe6"],
+  [4 / 6, "#5da997"],
+  [5 / 6, "#5da997"],
+  [5 / 6, "#1b8f82"],
+  [1.0, "#1b8f82"],
+];
 
 function formatSigned(value) {
   return value > 0 ? `+${value}` : `${value}`;
@@ -28,8 +46,62 @@ function number(value) {
   return new Intl.NumberFormat().format(value);
 }
 
+function formatRepoPath(path) {
+  const homeDir = config.homeDir || "";
+  if (!homeDir) {
+    return path;
+  }
+  if (path === homeDir) {
+    return "~";
+  }
+  if (path.startsWith(`${homeDir}/`)) {
+    return `~${path.slice(homeDir.length)}`;
+  }
+  return path;
+}
+
+function formatRelativeTime(timestampMs) {
+  if (timestampMs === null) {
+    return "-";
+  }
+
+  const elapsedSeconds = Math.max(0, Math.round((Date.now() - timestampMs) / 1000));
+  if (elapsedSeconds < 5) {
+    return "last edit just now";
+  }
+  if (elapsedSeconds < 60) {
+    return `last edit ${elapsedSeconds}s ago`;
+  }
+
+  const elapsedMinutes = Math.round(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `last edit ${elapsedMinutes}m ago`;
+  }
+
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `last edit ${elapsedHours}h ago`;
+  }
+
+  const elapsedDays = Math.round(elapsedHours / 24);
+  return `last edit ${elapsedDays}d ago`;
+}
+
+function renderLastEdit() {
+  els.lastEdit.textContent = formatRelativeTime(state.lastEditMs);
+}
+
+function ensureRelativeTimer() {
+  if (state.relativeTimer !== null) {
+    return;
+  }
+
+  state.relativeTimer = window.setInterval(renderLastEdit, 1000);
+}
+
 function applySummary(snapshot) {
   els.changedFiles.textContent = number(snapshot.summary.changed_files);
+  els.commitCount.textContent = number(snapshot.summary.commit_count);
   els.addedLines.textContent = number(snapshot.summary.added_lines);
   els.deletedLines.textContent = number(snapshot.summary.deleted_lines);
   els.netLines.textContent = formatSigned(snapshot.summary.net_lines);
@@ -40,18 +112,35 @@ function applySummary(snapshot) {
         ? "negative"
         : "neutral";
 
-  els.repoRoot.textContent = snapshot.repo_root;
+  els.repoRoot.textContent = formatRepoPath(snapshot.repo_root);
   els.headRef.textContent = snapshot.head_ref;
   els.baseRef.textContent = snapshot.base_ref;
-  els.mergeBase.textContent = snapshot.merge_base.slice(0, 12);
-  els.generatedAt.textContent = new Date(snapshot.generated_at).toLocaleTimeString();
+  state.lastEditMs = snapshot.last_edit_at ? Date.parse(snapshot.last_edit_at) : null;
+  renderLastEdit();
+  ensureRelativeTimer();
 }
 
-function nodeColor(node) {
+function nodeChurnWeight(nodeValue, maxValue) {
+  if (nodeValue <= 0 || maxValue <= 0) {
+    return 0;
+  }
+  return Math.log1p(nodeValue) / Math.log1p(maxValue);
+}
+
+// High-churn mixed files keep a directional tint instead of collapsing to neutral.
+function nodeColorBucket(node, maxValue) {
   if (node.is_binary && node.net_lines === 0) {
     return 0;
   }
-  return node.net_lines;
+  if (node.value <= 0 || node.net_lines === 0) {
+    return 0;
+  }
+
+  const directionalShare = Math.abs(node.net_lines) / Math.max(1, node.value);
+  const churnFloor = nodeChurnWeight(node.value, maxValue) * 0.4;
+  const strength = Math.max(directionalShare, churnFloor);
+  const bucket = strength >= 0.7 ? 3 : strength >= 0.35 ? 2 : 1;
+  return Math.sign(node.net_lines) * bucket;
 }
 
 function renderTreemap(snapshot) {
@@ -69,7 +158,8 @@ function renderTreemap(snapshot) {
   const labels = snapshot.nodes.map((node) => node.label);
   const parents = snapshot.nodes.map((node) => node.parent ?? "");
   const values = snapshot.nodes.map((node) => node.value);
-  const colors = snapshot.nodes.map(nodeColor);
+  const maxValue = snapshot.nodes.reduce((maximum, node) => Math.max(maximum, node.value), 0);
+  const colors = snapshot.nodes.map((node) => nodeColorBucket(node, maxValue));
   const hoverText = snapshot.nodes.map((node) => {
     const previous = node.previous_path ? `<br>rename from: ${node.previous_path}` : "";
     const binary = node.is_binary ? "<br>binary diff" : "";
@@ -96,11 +186,9 @@ function renderTreemap(snapshot) {
     customdata: hoverText,
     marker: {
       colors,
-      colorscale: [
-        [0.0, "#d96b4e"],
-        [0.5, "#d7d0c4"],
-        [1.0, "#1b8f82"],
-      ],
+      colorscale: TREEMAP_COLORSCALE,
+      cmin: -3,
+      cmax: 3,
       cmid: 0,
       line: { color: "rgba(255,250,243,0.92)", width: 1.5 },
     },
@@ -114,7 +202,6 @@ function renderTreemap(snapshot) {
     paper_bgcolor: "rgba(0,0,0,0)",
     plot_bgcolor: "rgba(0,0,0,0)",
     font: { family: '"IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif', color: "#2d2416" },
-    coloraxis: { cmid: 0 },
   };
 
   Plotly.react(els.treemap, [trace], layout, { responsive: true, displaylogo: false });
@@ -141,15 +228,48 @@ function renderChangeList(container, entries, direction) {
     net.className = direction === "positive" ? "positive" : "negative";
     net.textContent = `net ${formatSigned(entry.net_lines)}`;
 
-    const churn = document.createElement("span");
-    churn.textContent = `churn ${number(entry.value)}`;
-
     const delta = document.createElement("span");
-    delta.textContent = `+${number(entry.added_lines)} / -${number(entry.deleted_lines)}`;
+    delta.className = "delta-pair";
 
-    meta.append(net, churn, delta);
+    const added = document.createElement("span");
+    added.className = "positive";
+    added.textContent = `+${number(entry.added_lines)}`;
+
+    const deleted = document.createElement("span");
+    deleted.className = "negative";
+    deleted.textContent = `-${number(entry.deleted_lines)}`;
+
+    delta.append(added, deleted);
+    meta.append(net, delta);
     item.append(title, meta);
     container.append(item);
+  }
+}
+
+function renderCommits(commits) {
+  els.commits.replaceChildren();
+  if (!commits.length) {
+    const item = document.createElement("li");
+    item.textContent = "No branch commits yet.";
+    els.commits.append(item);
+    return;
+  }
+
+  for (const commit of commits) {
+    const item = document.createElement("li");
+    const title = document.createElement("strong");
+    title.textContent = commit.subject;
+
+    const meta = document.createElement("div");
+    meta.className = "change-meta";
+
+    const sha = document.createElement("span");
+    sha.className = "neutral";
+    sha.textContent = commit.short_sha;
+
+    meta.append(sha);
+    item.append(title, meta);
+    els.commits.append(item);
   }
 }
 
@@ -177,6 +297,7 @@ function renderError(detail) {
   state.snapshotKey = null;
   setStatus("Needs attention", "negative");
   els.treemap.replaceChildren();
+  els.commits.replaceChildren();
   els.additions.replaceChildren();
   els.deletions.replaceChildren();
 
@@ -195,6 +316,7 @@ function applySnapshot(snapshot) {
   state.snapshotKey = snapshot.snapshot_key;
   applySummary(snapshot);
   renderTreemap(snapshot);
+  renderCommits(snapshot.commits);
   renderPanels(snapshot);
   setStatus("Live", "positive");
 }

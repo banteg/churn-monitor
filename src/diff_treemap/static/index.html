@@ -13,63 +13,57 @@
   </head>
   <body>
     <div class="shell">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">Diff Treemap</p>
-          <h1>Current branch vs base</h1>
+      <section class="topbar repo-strip">
+        <div class="info-item repo-item">
+          <span class="label">Repo</span>
+          <strong id="repo-root">-</strong>
         </div>
-        <div id="status-pill" class="status-pill">Loading</div>
-      </header>
-
-      <section class="summary-grid">
-        <article class="metric-card">
-          <span>Changed files</span>
-          <strong id="changed-files">0</strong>
-        </article>
-        <article class="metric-card">
-          <span>Added lines</span>
-          <strong id="added-lines">0</strong>
-        </article>
-        <article class="metric-card">
-          <span>Deleted lines</span>
-          <strong id="deleted-lines">0</strong>
-        </article>
-        <article class="metric-card">
-          <span>Net lines</span>
-          <strong id="net-lines">0</strong>
-        </article>
+        <div class="status-group">
+          <span id="last-edit" class="last-edit">-</span>
+          <div id="status-pill" class="status-pill">Loading</div>
+        </div>
       </section>
 
-      <section class="info-bar">
-        <div>
-          <span class="label">Repo</span>
-          <span id="repo-root">-</span>
-        </div>
-        <div>
+      <header class="topbar summary-bar">
+        <section class="summary-strip" aria-label="Diff summary">
+          <div class="summary-item neutral">
+            <span>Changed files</span>
+            <strong id="changed-files">0</strong>
+          </div>
+          <div class="summary-item neutral">
+            <span>Commits</span>
+            <strong id="commit-count">0</strong>
+          </div>
+          <div class="summary-item positive">
+            <span>Added lines</span>
+            <strong id="added-lines">0</strong>
+          </div>
+          <div class="summary-item negative">
+            <span>Deleted lines</span>
+            <strong id="deleted-lines">0</strong>
+          </div>
+          <div class="summary-item">
+            <span>Net lines</span>
+            <strong id="net-lines">0</strong>
+          </div>
+        </section>
+      </header>
+
+      <section class="topbar info-strip">
+        <div class="info-item">
           <span class="label">Branch</span>
-          <span id="head-ref">-</span>
+          <strong id="head-ref">-</strong>
         </div>
-        <div>
+        <div class="info-item">
           <span class="label">Base</span>
-          <span id="base-ref">-</span>
-        </div>
-        <div>
-          <span class="label">Merge base</span>
-          <span id="merge-base">-</span>
-        </div>
-        <div>
-          <span class="label">Updated</span>
-          <span id="generated-at">-</span>
+          <strong id="base-ref">-</strong>
         </div>
       </section>
 
       <section class="content-grid">
         <article class="panel treemap-panel">
           <div class="panel-header">
-            <div>
-              <p class="panel-title">Treemap</p>
-              <p class="panel-subtitle">Area = churn, color = net delta</p>
-            </div>
+            <p class="panel-title">Treemap</p>
           </div>
           <div id="treemap" class="treemap"></div>
         </article>
@@ -77,20 +71,21 @@
         <aside class="side-stack">
           <article class="panel">
             <div class="panel-header">
-              <div>
-                <p class="panel-title">Top Additions</p>
-                <p class="panel-subtitle">Files with the biggest net increase</p>
-              </div>
+              <p class="panel-title">Commits</p>
+            </div>
+            <ol id="commit-list" class="commit-list"></ol>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <p class="panel-title">Top Additions</p>
             </div>
             <ol id="top-additions" class="change-list"></ol>
           </article>
 
           <article class="panel">
             <div class="panel-header">
-              <div>
-                <p class="panel-title">Top Cuts</p>
-                <p class="panel-subtitle">Files with the biggest net decrease</p>
-              </div>
+              <p class="panel-title">Top Cuts</p>
             </div>
             <ol id="top-deletions" class="change-list"></ol>
           </article>

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
 from typing import AsyncIterator
@@ -50,8 +51,10 @@ def create_app(
 
     config = {
         "repoRoot": str(resolved_root),
+        "homeDir": str(Path.home()),
         "defaultBase": default_base or "",
     }
+    app.state.last_edit_at = None
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -86,7 +89,11 @@ def create_app(
         async def event_stream() -> AsyncIterator[str]:
             last_fingerprint: str | None = None
 
-            event_name, payload, fingerprint = snapshot_event(resolved_root, resolved_base)
+            event_name, payload, fingerprint = snapshot_event(
+                resolved_root,
+                resolved_base,
+                last_edit_at=app.state.last_edit_at,
+            )
             last_fingerprint = fingerprint
             yield encode_sse(event_name, payload, retry_ms=WATCH_RETRY_MS)
 
@@ -106,7 +113,12 @@ def create_app(
                     yield ": keepalive\n\n"
                     continue
 
-                event_name, payload, fingerprint = snapshot_event(resolved_root, resolved_base)
+                app.state.last_edit_at = detect_last_edit_at(changes)
+                event_name, payload, fingerprint = snapshot_event(
+                    resolved_root,
+                    resolved_base,
+                    last_edit_at=app.state.last_edit_at,
+                )
                 if fingerprint == last_fingerprint:
                     continue
 
@@ -135,7 +147,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.watch_stop_event.set()
 
 
-def snapshot_event(repo_root: Path, base_ref: str | None) -> tuple[str, dict[str, object], str]:
+def snapshot_event(
+    repo_root: Path,
+    base_ref: str | None,
+    *,
+    last_edit_at: datetime | None = None,
+) -> tuple[str, dict[str, object], str]:
     try:
         snapshot_model = collect_snapshot(repo_root, base_ref)
     except DiffTreemapError as exc:
@@ -143,8 +160,14 @@ def snapshot_event(repo_root: Path, base_ref: str | None) -> tuple[str, dict[str
         fingerprint = f"problem:{exc.status_code}:{payload['detail']}"
         return "problem", payload, fingerprint
 
+    if last_edit_at is not None:
+        snapshot_model.last_edit_at = last_edit_at
+
     payload = snapshot_model.model_dump(mode="json")
-    return "snapshot", payload, f"snapshot:{payload['snapshot_key']}"
+    fingerprint_parts = [f"snapshot:{payload['snapshot_key']}"]
+    if payload["last_edit_at"]:
+        fingerprint_parts.append(payload["last_edit_at"])
+    return "snapshot", payload, "|".join(fingerprint_parts)
 
 
 def encode_sse(event: str, payload: dict[str, object], *, retry_ms: int | None = None) -> str:
@@ -163,3 +186,25 @@ def watch_filter(change: Change, path: str) -> bool:
     del change
     path_parts = set(Path(path).parts)
     return not path_parts.intersection(IGNORED_WATCH_PARTS)
+
+
+def detect_last_edit_at(changes: set[tuple[Change, str]]) -> datetime | None:
+    latest_mtime: float | None = None
+
+    for change, raw_path in changes:
+        path = Path(raw_path)
+        if change == Change.deleted or not path.exists():
+            if path.parent.exists():
+                latest_mtime = max(latest_mtime or 0.0, path.parent.stat().st_mtime)
+            continue
+
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        latest_mtime = mtime if latest_mtime is None else max(latest_mtime, mtime)
+
+    if latest_mtime is None:
+        return None
+
+    return datetime.fromtimestamp(latest_mtime, tz=UTC)

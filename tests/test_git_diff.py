@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -56,10 +57,12 @@ def test_collect_snapshot_includes_branch_worktree_and_untracked(repo: Path) -> 
     snapshot = collect_snapshot(repo)
 
     assert snapshot.base_ref == "main"
+    assert snapshot.summary.commit_count == 1
     assert snapshot.summary.changed_files == 4
     assert snapshot.summary.added_lines == 7
     assert snapshot.summary.deleted_lines == 1
     assert snapshot.summary.net_lines == 6
+    assert snapshot.commits[0].subject == "test: add coverage"
 
     leaves = {node.path: node for node in snapshot.nodes if node.kind == "file"}
     assert leaves["src/alpha.py"].net_lines == 1
@@ -68,6 +71,7 @@ def test_collect_snapshot_includes_branch_worktree_and_untracked(repo: Path) -> 
     assert leaves["notes.txt"].added_lines == 2
     assert "src" in {node.id for node in snapshot.nodes}
     assert snapshot.snapshot_key
+    assert snapshot.last_edit_at is not None
 
 
 def test_resolve_base_ref_prefers_existing_default_branch(repo: Path) -> None:
@@ -117,6 +121,9 @@ def test_snapshot_event_returns_initial_snapshot(repo: Path) -> None:
     assert payload["base_ref"] == "main"
     assert payload["head_ref"] == "feature"
     assert fingerprint.startswith("snapshot:")
+    assert payload["summary"]["commit_count"] == 0
+    assert "last_edit_at" in payload
+    assert payload["commits"] == []
 
     encoded = encode_sse(event_name, payload, retry_ms=1000)
     assert encoded.startswith("retry: 1000\nevent: snapshot\n")
@@ -151,3 +158,17 @@ def test_signal_watchers_to_stop_sets_watch_stop_event(repo: Path) -> None:
         client.get("/api/snapshot")
         signal_watchers_to_stop(app)
         assert app.state.watch_stop_event.is_set() is True
+
+
+def test_snapshot_event_uses_watcher_last_edit(repo: Path) -> None:
+    git(repo, "checkout", "-b", "feature")
+    last_edit_at = datetime(2026, 3, 6, 10, 0, tzinfo=UTC)
+    event_name, payload, fingerprint = snapshot_event(
+        repo,
+        None,
+        last_edit_at=last_edit_at,
+    )
+
+    assert event_name == "snapshot"
+    assert payload["last_edit_at"] == "2026-03-06T10:00:00Z"
+    assert fingerprint.endswith("2026-03-06T10:00:00Z")
