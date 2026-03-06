@@ -139,13 +139,19 @@ def test_collect_overview_sorts_recent_targets_and_preserves_current_selection(r
         "-m",
         "feat: add review branch work",
         env={
-            "GIT_AUTHOR_DATE": "2026-03-06T12:00:00Z",
-            "GIT_COMMITTER_DATE": "2026-03-06T12:00:00Z",
+            "GIT_AUTHOR_DATE": "2026-03-07T12:00:00Z",
+            "GIT_COMMITTER_DATE": "2026-03-07T12:00:00Z",
         },
     )
     git(repo, "checkout", "main")
 
-    overview = collect_overview(repo)
+    overview = collect_overview(
+        repo,
+        last_edit_overrides={
+            str(repo): datetime(2026, 3, 6, 9, 0, tzinfo=UTC),
+            str(feature_worktree): datetime(2026, 3, 6, 11, 0, tzinfo=UTC),
+        },
+    )
 
     assert overview.selected_target_id == "branch:main"
     assert overview.snapshot.head_ref == "main"
@@ -154,6 +160,24 @@ def test_collect_overview_sorts_recent_targets_and_preserves_current_selection(r
     review_target = next(target for target in overview.targets if target.head_ref == "review")
     assert feature_target.worktree_path == str(feature_worktree)
     assert review_target.worktree_path is None
+
+
+def test_collect_overview_skips_prunable_worktrees(repo: Path) -> None:
+    stale_worktree = repo.parent / "stale-worktree"
+    git(repo, "worktree", "add", str(stale_worktree))
+    for path in sorted(stale_worktree.rglob("*"), reverse=True):
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            path.rmdir()
+    stale_worktree.rmdir()
+
+    overview = collect_overview(repo)
+
+    assert overview.selected_target_id == "branch:main"
+    assert all(target.worktree_path != str(stale_worktree) for target in overview.targets)
+    stale_branch = next(target for target in overview.targets if target.head_ref == "stale-worktree")
+    assert stale_branch.worktree_path is None
 
 
 def test_api_returns_error_for_unborn_head(tmp_path: Path) -> None:

@@ -269,7 +269,13 @@ def list_worktrees(repo_root: Path) -> list[WorktreeEntry]:
 
     entries: list[WorktreeEntry] = []
     for record in records:
+        if "prunable" in record:
+            continue
+
         path = Path(record["worktree"]).resolve()
+        if not path.exists():
+            continue
+
         branch = record.get("branch")
         head_sha = record.get("HEAD", "")
         is_detached = "detached" in record or not branch
