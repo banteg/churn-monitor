@@ -65,5 +65,15 @@ Options:
 
 ```bash
 uv sync --extra dev
+npm --prefix frontend install
 uv run python -m pytest
+```
+
+Frontend source lives in `frontend/`. Production assets are built into
+`src/churn_monitor/client` for the FastAPI app to serve.
+
+After frontend changes, rebuild with:
+
+```bash
+npm --prefix frontend run build
 ```

@@ -1,0 +1,18 @@
+{
+  "name": "churn-monitor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@tanstack/solid-query": "^5.90.23",
+    "plotly.js-dist-min": "^3.4.0",
+    "solid-js": "^1.9.11"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1",
+    "vite-plugin-solid": "^2.11.10"
+  }
+}
