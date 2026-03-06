@@ -1,7 +1,31 @@
 const config = window.DIFF_TREEMAP_CONFIG ?? {};
+const STORAGE_KEY_TREEMAP_METRIC = "diff-treemap.metric";
+const STORAGE_KEY_COMMIT_ORDER = "diff-treemap.commit-order";
+
+function loadTreemapMetric() {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY_TREEMAP_METRIC) === "net" ? "net" : "churn";
+  } catch {
+    return "churn";
+  }
+}
+
+function loadCommitOrder() {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY_COMMIT_ORDER) === "chrono"
+      ? "chrono"
+      : "reverse";
+  } catch {
+    return "reverse";
+  }
+}
+
 const state = {
+  commitOrder: loadCommitOrder(),
+  lastSnapshot: null,
   lastEditMs: null,
   snapshotKey: null,
+  treemapMetric: loadTreemapMetric(),
   relativeTimer: null,
   stream: null,
 };
@@ -20,6 +44,8 @@ const els = {
   commits: document.getElementById("commit-list"),
   additions: document.getElementById("top-additions"),
   deletions: document.getElementById("top-deletions"),
+  commitOrderButtons: [...document.querySelectorAll("[data-commit-order]")],
+  metricButtons: [...document.querySelectorAll("[data-treemap-metric]")],
   treemap: document.getElementById("treemap"),
 };
 
@@ -67,28 +93,45 @@ function formatRelativeTime(timestampMs) {
 
   const elapsedSeconds = Math.max(0, Math.round((Date.now() - timestampMs) / 1000));
   if (elapsedSeconds < 5) {
-    return "last edit just now";
+    return "just now";
   }
   if (elapsedSeconds < 60) {
-    return `last edit ${elapsedSeconds}s ago`;
+    return `${elapsedSeconds}s ago`;
   }
 
   const elapsedMinutes = Math.round(elapsedSeconds / 60);
   if (elapsedMinutes < 60) {
-    return `last edit ${elapsedMinutes}m ago`;
+    return `${elapsedMinutes}m ago`;
   }
 
   const elapsedHours = Math.round(elapsedMinutes / 60);
   if (elapsedHours < 24) {
-    return `last edit ${elapsedHours}h ago`;
+    return `${elapsedHours}h ago`;
   }
 
   const elapsedDays = Math.round(elapsedHours / 24);
-  return `last edit ${elapsedDays}d ago`;
+  return `${elapsedDays}d ago`;
 }
 
 function renderLastEdit() {
-  els.lastEdit.textContent = formatRelativeTime(state.lastEditMs);
+  const relativeTime = formatRelativeTime(state.lastEditMs);
+  els.lastEdit.textContent = relativeTime === "-" ? "-" : `last edit ${relativeTime}`;
+}
+
+function saveTreemapMetric(metric) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY_TREEMAP_METRIC, metric);
+  } catch {
+    // Ignore localStorage failures in private browsing or restricted contexts.
+  }
+}
+
+function saveCommitOrder(order) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY_COMMIT_ORDER, order);
+  } catch {
+    // Ignore localStorage failures in private browsing or restricted contexts.
+  }
 }
 
 function ensureRelativeTimer() {
@@ -96,7 +139,35 @@ function ensureRelativeTimer() {
     return;
   }
 
-  state.relativeTimer = window.setInterval(renderLastEdit, 1000);
+  state.relativeTimer = window.setInterval(renderRelativeTimes, 1000);
+}
+
+function renderMetricToggle() {
+  for (const button of els.metricButtons) {
+    const isActive = button.dataset.treemapMetric === state.treemapMetric;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  }
+}
+
+function renderCommitOrderToggle() {
+  for (const button of els.commitOrderButtons) {
+    const isActive = button.dataset.commitOrder === state.commitOrder;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+  }
+}
+
+function renderCommitTimes() {
+  for (const element of document.querySelectorAll("[data-commit-timestamp-ms]")) {
+    const timestampMs = Number(element.dataset.commitTimestampMs);
+    element.textContent = Number.isFinite(timestampMs) ? formatRelativeTime(timestampMs) : "-";
+  }
+}
+
+function renderRelativeTimes() {
+  renderLastEdit();
+  renderCommitTimes();
 }
 
 function applySummary(snapshot) {
@@ -127,6 +198,51 @@ function nodeChurnWeight(nodeValue, maxValue) {
   return Math.log1p(nodeValue) / Math.log1p(maxValue);
 }
 
+function leafMetricValue(node) {
+  if (state.treemapMetric === "net") {
+    return Math.abs(node.net_lines);
+  }
+  return node.value;
+}
+
+function treemapValues(snapshot) {
+  if (state.treemapMetric === "churn") {
+    return snapshot.nodes.map((node) => node.value);
+  }
+
+  const totals = new Map();
+  const childrenByParent = new Map();
+
+  for (const node of snapshot.nodes) {
+    const parentId = node.parent ?? "";
+    if (!childrenByParent.has(parentId)) {
+      childrenByParent.set(parentId, []);
+    }
+    childrenByParent.get(parentId).push(node);
+  }
+
+  function computeTotal(node) {
+    if (totals.has(node.id)) {
+      return totals.get(node.id);
+    }
+
+    const children = childrenByParent.get(node.id) ?? [];
+    const total =
+      children.length === 0
+        ? leafMetricValue(node)
+        : children.reduce((sum, child) => sum + computeTotal(child), 0);
+
+    totals.set(node.id, total);
+    return total;
+  }
+
+  return snapshot.nodes.map((node) => computeTotal(node));
+}
+
+function metricLabel() {
+  return state.treemapMetric === "net" ? "abs net" : "churn";
+}
+
 // High-churn mixed files keep a directional tint instead of collapsing to neutral.
 function nodeColorBucket(node, maxValue) {
   if (node.is_binary && node.net_lines === 0) {
@@ -144,12 +260,18 @@ function nodeColorBucket(node, maxValue) {
 }
 
 function renderTreemap(snapshot) {
-  const hasVisibleArea = snapshot.nodes.some((node) => node.kind === "file" && node.value > 0);
+  const values = treemapValues(snapshot);
+  const hasVisibleArea = snapshot.nodes.some(
+    (node, index) => node.kind === "file" && values[index] > 0,
+  );
   if (!hasVisibleArea) {
     els.treemap.replaceChildren();
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No line changes relative to the selected base.";
+    empty.textContent =
+      state.treemapMetric === "net"
+        ? "No net line changes relative to the selected base."
+        : "No line changes relative to the selected base.";
     els.treemap.append(empty);
     return;
   }
@@ -157,15 +279,16 @@ function renderTreemap(snapshot) {
   const ids = snapshot.nodes.map((node) => node.id);
   const labels = snapshot.nodes.map((node) => node.label);
   const parents = snapshot.nodes.map((node) => node.parent ?? "");
-  const values = snapshot.nodes.map((node) => node.value);
-  const maxValue = snapshot.nodes.reduce((maximum, node) => Math.max(maximum, node.value), 0);
-  const colors = snapshot.nodes.map((node) => nodeColorBucket(node, maxValue));
-  const hoverText = snapshot.nodes.map((node) => {
+  const maxChurn = snapshot.nodes.reduce((maximum, node) => Math.max(maximum, node.value), 0);
+  const colors = snapshot.nodes.map((node) => nodeColorBucket(node, maxChurn));
+  const sizeLabel = metricLabel();
+  const hoverText = snapshot.nodes.map((node, index) => {
     const previous = node.previous_path ? `<br>rename from: ${node.previous_path}` : "";
     const binary = node.is_binary ? "<br>binary diff" : "";
     return [
       `<b>${node.path}</b>`,
       `kind: ${node.kind}`,
+      `size (${sizeLabel}): ${number(values[index])}`,
       `churn: ${number(node.value)}`,
       `added: ${number(node.added_lines)}`,
       `deleted: ${number(node.deleted_lines)}`,
@@ -218,7 +341,8 @@ function renderChangeList(container, entries, direction) {
 
   for (const entry of entries) {
     const item = document.createElement("li");
-    const title = document.createElement("strong");
+    const title = document.createElement("span");
+    title.className = "entry-title";
     title.textContent = entry.path;
 
     const meta = document.createElement("div");
@@ -248,27 +372,42 @@ function renderChangeList(container, entries, direction) {
 
 function renderCommits(commits) {
   els.commits.replaceChildren();
-  if (!commits.length) {
+  const orderedCommits = [...commits].sort((left, right) => {
+    const leftTime = Date.parse(left.committed_at);
+    const rightTime = Date.parse(right.committed_at);
+    const leftValue = Number.isFinite(leftTime) ? leftTime : 0;
+    const rightValue = Number.isFinite(rightTime) ? rightTime : 0;
+    return state.commitOrder === "chrono" ? leftValue - rightValue : rightValue - leftValue;
+  });
+
+  if (!orderedCommits.length) {
     const item = document.createElement("li");
     item.textContent = "No branch commits yet.";
     els.commits.append(item);
     return;
   }
 
-  for (const commit of commits) {
+  for (const commit of orderedCommits) {
     const item = document.createElement("li");
-    const title = document.createElement("strong");
+    const row = document.createElement("div");
+    row.className = "commit-row";
+
+    const title = document.createElement("span");
+    title.className = "entry-title";
     title.textContent = commit.subject;
 
-    const meta = document.createElement("div");
-    meta.className = "change-meta";
+    const relativeTime = document.createElement("span");
+    relativeTime.className = "entry-time neutral";
+    const timestampMs = Date.parse(commit.committed_at);
+    if (Number.isFinite(timestampMs)) {
+      relativeTime.dataset.commitTimestampMs = String(timestampMs);
+      relativeTime.textContent = formatRelativeTime(timestampMs);
+    } else {
+      relativeTime.textContent = "-";
+    }
 
-    const sha = document.createElement("span");
-    sha.className = "neutral";
-    sha.textContent = commit.short_sha;
-
-    meta.append(sha);
-    item.append(title, meta);
+    row.append(title, relativeTime);
+    item.append(row);
     els.commits.append(item);
   }
 }
@@ -294,6 +433,7 @@ function setStatus(label, tone = "neutral") {
 }
 
 function renderError(detail) {
+  state.lastSnapshot = null;
   state.snapshotKey = null;
   setStatus("Needs attention", "negative");
   els.treemap.replaceChildren();
@@ -308,6 +448,7 @@ function renderError(detail) {
 }
 
 function applySnapshot(snapshot) {
+  state.lastSnapshot = snapshot;
   if (snapshot.snapshot_key === state.snapshotKey) {
     setStatus("Live", "neutral");
     return;
@@ -319,6 +460,38 @@ function applySnapshot(snapshot) {
   renderCommits(snapshot.commits);
   renderPanels(snapshot);
   setStatus("Live", "positive");
+}
+
+function setTreemapMetric(metric) {
+  if (metric !== "churn" && metric !== "net") {
+    return;
+  }
+  if (metric === state.treemapMetric) {
+    return;
+  }
+
+  state.treemapMetric = metric;
+  saveTreemapMetric(metric);
+  renderMetricToggle();
+  if (state.lastSnapshot) {
+    renderTreemap(state.lastSnapshot);
+  }
+}
+
+function setCommitOrder(order) {
+  if (order !== "chrono" && order !== "reverse") {
+    return;
+  }
+  if (order === state.commitOrder) {
+    return;
+  }
+
+  state.commitOrder = order;
+  saveCommitOrder(order);
+  renderCommitOrderToggle();
+  if (state.lastSnapshot) {
+    renderCommits(state.lastSnapshot.commits);
+  }
 }
 
 function eventsUrl() {
@@ -366,4 +539,18 @@ function connectStream() {
   });
 }
 
+for (const button of els.metricButtons) {
+  button.addEventListener("click", () => {
+    setTreemapMetric(button.dataset.treemapMetric);
+  });
+}
+
+for (const button of els.commitOrderButtons) {
+  button.addEventListener("click", () => {
+    setCommitOrder(button.dataset.commitOrder);
+  });
+}
+
+renderCommitOrderToggle();
+renderMetricToggle();
 connectStream();

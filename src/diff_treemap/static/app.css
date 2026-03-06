@@ -158,6 +158,37 @@ body {
   margin: 0;
 }
 
+.metric-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: #ece7de;
+}
+
+.metric-button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.metric-button:hover {
+  color: var(--text);
+}
+
+.metric-button.active {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
 .status-pill {
   border-radius: 999px;
   background: #ece7de;
@@ -174,26 +205,26 @@ body {
 
 .side-stack {
   display: grid;
-  gap: 12px;
+  gap: 6px;
 }
 
 .change-list {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 16px;
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 
 .commit-list {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 16px;
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 
 .change-list li,
 .commit-list li {
-  line-height: 1.45;
+  line-height: 1.3;
 }
 
 .empty-state {
@@ -207,17 +238,33 @@ body {
   padding: 32px;
 }
 
-.change-list strong,
-.commit-list strong {
+.entry-title {
   display: block;
   font-size: 0.98rem;
+  font-weight: 500;
+}
+
+.commit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 8px;
+}
+
+.commit-row .entry-title {
+  min-width: 0;
+}
+
+.entry-time {
+  font-size: 0.88rem;
+  white-space: nowrap;
 }
 
 .change-meta {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 0.88rem;
   flex-wrap: wrap;
 }
 
@@ -227,12 +274,13 @@ body {
 }
 
 .treemap-panel .panel-header {
+  justify-content: flex-end;
   margin-bottom: 6px;
 }
 
 .treemap-panel #treemap {
-  border-radius: 10px;
-  overflow: hidden;
+  border-radius: 0;
+  overflow: visible;
 }
 
 .positive {

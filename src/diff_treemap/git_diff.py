@@ -216,19 +216,19 @@ def collect_commits(repo_root: Path, merge_base: str) -> list[CommitEntry]:
     raw = git_text(
         repo_root,
         "log",
-        "--format=%H%x1f%h%x1f%s%x1e",
+        "--format=%H%x1f%ct%x1f%s%x1e",
         f"{merge_base}..HEAD",
     )
     commits: list[CommitEntry] = []
     for record in raw.split("\x1e"):
         if not record.strip():
             continue
-        sha, short_sha, subject = record.rstrip("\n").split("\x1f", maxsplit=2)
+        sha, committed_at_unix, subject = record.rstrip("\n").split("\x1f", maxsplit=2)
         commits.append(
             CommitEntry(
                 sha=sha,
-                short_sha=short_sha,
                 subject=subject,
+                committed_at=datetime.fromtimestamp(int(committed_at_unix), tz=UTC),
             )
         )
     return commits

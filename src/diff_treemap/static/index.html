@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Diff Treemap</title>
+    <title>Diff View</title>
     <link rel="stylesheet" href="/static/app.css">
     <script>
       window.DIFF_TREEMAP_CONFIG = __APP_CONFIG__;
@@ -63,7 +63,10 @@
       <section class="content-grid">
         <article class="panel treemap-panel">
           <div class="panel-header">
-            <p class="panel-title">Treemap</p>
+            <div class="metric-toggle" role="group" aria-label="Size metric">
+              <button type="button" class="metric-button" data-treemap-metric="churn">Churn</button>
+              <button type="button" class="metric-button" data-treemap-metric="net">Net</button>
+            </div>
           </div>
           <div id="treemap" class="treemap"></div>
         </article>
@@ -72,6 +75,10 @@
           <article class="panel">
             <div class="panel-header">
               <p class="panel-title">Commits</p>
+              <div class="metric-toggle" role="group" aria-label="Commit order">
+                <button type="button" class="metric-button" data-commit-order="reverse">Reverse</button>
+                <button type="button" class="metric-button" data-commit-order="chrono">Chrono</button>
+              </div>
             </div>
             <ol id="commit-list" class="commit-list"></ol>
           </article>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,13 +14,17 @@ from diff_treemap.cli import signal_watchers_to_stop
 from diff_treemap.git_diff import DiffTreemapError, collect_snapshot, resolve_base_ref
 
 
-def git(repo: Path, *args: str) -> str:
+def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
     completed = subprocess.run(
         ["git", *args],
         cwd=repo,
         check=True,
         capture_output=True,
         text=True,
+        env=run_env,
     )
     return completed.stdout.strip()
 
@@ -47,7 +52,16 @@ def test_collect_snapshot_includes_branch_worktree_and_untracked(repo: Path) -> 
     git(repo, "checkout", "-b", "feature")
     write(repo, "tests/test_alpha.py", b"def test_ok():\n    assert True\n")
     git(repo, "add", "tests/test_alpha.py")
-    git(repo, "commit", "-m", "test: add coverage")
+    git(
+        repo,
+        "commit",
+        "-m",
+        "test: add coverage",
+        env={
+            "GIT_AUTHOR_DATE": "2026-03-06T10:00:00Z",
+            "GIT_COMMITTER_DATE": "2026-03-06T10:00:00Z",
+        },
+    )
 
     write(repo, "src/alpha.py", b"one\nthree\nfour\nfive\n")
     write(repo, "README.md", b"base\nplus one\n")
@@ -63,6 +77,7 @@ def test_collect_snapshot_includes_branch_worktree_and_untracked(repo: Path) -> 
     assert snapshot.summary.deleted_lines == 1
     assert snapshot.summary.net_lines == 6
     assert snapshot.commits[0].subject == "test: add coverage"
+    assert snapshot.commits[0].committed_at == datetime(2026, 3, 6, 10, 0, tzinfo=UTC)
 
     leaves = {node.path: node for node in snapshot.nodes if node.kind == "file"}
     assert leaves["src/alpha.py"].net_lines == 1

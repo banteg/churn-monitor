@@ -22,8 +22,8 @@ class DiffNode(BaseModel):
 
 class CommitEntry(BaseModel):
     sha: str
-    short_sha: str
     subject: str
+    committed_at: datetime
 
 
 class SnapshotSummary(BaseModel):
