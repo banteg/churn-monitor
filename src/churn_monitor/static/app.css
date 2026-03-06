@@ -31,6 +31,77 @@ body {
   gap: 6px;
 }
 
+.branch-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 0 4px 8px;
+}
+
+.target-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
+.branch-pill {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(252, 251, 248, 0.96), rgba(244, 240, 233, 0.96));
+  color: var(--text);
+  border-radius: 999px;
+  padding: 10px 14px;
+  min-width: 180px;
+  max-width: min(100%, 320px);
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    transform 120ms ease;
+}
+
+.branch-pill:hover {
+  border-color: #b8b09f;
+  transform: translateY(-1px);
+}
+
+.branch-pill.active {
+  border-color: rgba(27, 143, 130, 0.45);
+  background: linear-gradient(180deg, rgba(220, 235, 230, 0.9), rgba(250, 248, 244, 0.95));
+}
+
+.branch-pill-name {
+  font-size: 0.96rem;
+  font-weight: 650;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-pill-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.2;
+  flex-wrap: wrap;
+}
+
+.branch-pill-time {
+  white-space: nowrap;
+}
+
+.branch-pill-stats {
+  min-width: 0;
+}
+
 .topbar,
 .panel {
   background: transparent;
@@ -377,5 +448,15 @@ body {
 
   .info-item strong {
     max-width: 100%;
+  }
+
+  .branch-bar {
+    padding-inline: 0;
+  }
+
+  .branch-pill {
+    min-width: 100%;
+    max-width: 100%;
+    border-radius: 18px;
   }
 }

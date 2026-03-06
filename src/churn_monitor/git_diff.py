@@ -8,7 +8,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from .models import CommitEntry, DiffNode, DiffSnapshot, SnapshotSummary
+from .models import (
+    CommitEntry,
+    DiffNode,
+    DiffSnapshot,
+    MonitorOverview,
+    MonitorTargetSummary,
+    SnapshotSummary,
+)
 
 AUTODETECT_BASE_CANDIDATES: Final[tuple[str, ...]] = (
     "origin/HEAD",
@@ -44,25 +51,67 @@ class FileDelta:
         return self.added_lines + self.deleted_lines
 
 
-def collect_snapshot(repo_root: Path, base_override: str | None = None) -> DiffSnapshot:
+@dataclass(slots=True)
+class MonitorTarget:
+    id: str
+    head_ref: str
+    repo_root: Path
+    worktree_path: Path | None
+    is_current: bool
+
+    @property
+    def last_edit_key(self) -> str | None:
+        if self.worktree_path is None:
+            return None
+        return str(self.worktree_path)
+
+
+@dataclass(slots=True)
+class WorktreeEntry:
+    path: Path
+    head_ref: str
+    is_current: bool
+    is_detached: bool = False
+
+
+def collect_snapshot(
+    repo_root: Path,
+    base_override: str | None = None,
+    *,
+    head_ref_override: str | None = None,
+    target_id: str | None = None,
+    worktree_path: Path | None = None,
+) -> DiffSnapshot:
     repo_root = resolve_repo_root(repo_root)
 
-    if not head_exists(repo_root):
-        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
+    if head_ref_override is None:
+        if not head_exists(repo_root):
+            raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
+        head_ref = resolve_head_ref(repo_root)
+        head_spec = "HEAD"
+    else:
+        try:
+            verify_ref(repo_root, head_ref_override)
+        except ChurnMonitorError as exc:
+            raise ChurnMonitorError(
+                f"Head ref '{head_ref_override}' does not resolve to a commit.",
+                status_code=404,
+            ) from exc
+        head_ref = head_ref_override
+        head_spec = head_ref_override
 
-    head_ref = resolve_head_ref(repo_root)
     base_ref = resolve_base_ref(repo_root, base_override)
     try:
-        merge_base = git_text(repo_root, "merge-base", "HEAD", base_ref).strip()
+        merge_base = git_text(repo_root, "merge-base", head_spec, base_ref).strip()
     except ChurnMonitorError as exc:
         raise ChurnMonitorError(
-            f"Unable to compute a merge base between HEAD and {base_ref}.",
+            f"Unable to compute a merge base between {head_ref} and {base_ref}.",
             status_code=409,
         ) from exc
 
-    tracked = parse_numstat_output(git_bytes(repo_root, "diff", "--numstat", "-z", "-M", merge_base))
-    untracked = list(read_untracked_deltas(repo_root))
-    commits = collect_commits(repo_root, merge_base)
+    tracked = parse_numstat_output(git_numstat(repo_root, merge_base, head_spec))
+    untracked = list(read_untracked_deltas(repo_root)) if head_ref_override is None else []
+    commits = collect_commits(repo_root, merge_base, head_spec=head_spec)
 
     leaves: dict[str, FileDelta] = {delta.path: delta for delta in tracked}
     for delta in untracked:
@@ -78,11 +127,15 @@ def collect_snapshot(repo_root: Path, base_override: str | None = None) -> DiffS
         leaves.values(),
         commits,
     )
-    last_edit_at = infer_last_edit_at(repo_root, leaves.values())
+    last_edit_at = infer_last_edit_at(repo_root, leaves.values()) if head_ref_override is None else None
+    head_commit_at = resolve_ref_commit_at(repo_root, head_spec)
 
     return DiffSnapshot(
+        target_id=target_id or build_branch_target_id(head_ref),
         repo_root=str(repo_root),
+        worktree_path=str(worktree_path) if worktree_path is not None else None,
         head_ref=head_ref,
+        head_commit_at=head_commit_at,
         base_ref=base_ref,
         merge_base=merge_base,
         snapshot_key=snapshot_key,
@@ -92,6 +145,186 @@ def collect_snapshot(repo_root: Path, base_override: str | None = None) -> DiffS
         commits=commits,
         nodes=nodes,
     )
+
+
+def collect_overview(
+    repo_root: Path,
+    base_override: str | None = None,
+    *,
+    selected_target_id: str | None = None,
+    last_edit_overrides: dict[str, datetime] | None = None,
+) -> MonitorOverview:
+    resolved_root = resolve_repo_root(repo_root)
+    targets = collect_monitor_targets(resolved_root)
+    if not targets:
+        raise ChurnMonitorError("No commits found yet. Create the first commit before diffing.")
+
+    overrides = last_edit_overrides or {}
+    snapshots: dict[str, DiffSnapshot] = {}
+    summaries: list[MonitorTargetSummary] = []
+
+    for target in targets:
+        snapshot = collect_target_snapshot(target, base_override)
+        if target.last_edit_key and target.last_edit_key in overrides:
+            snapshot.last_edit_at = merge_latest_timestamp(
+                snapshot.last_edit_at,
+                overrides[target.last_edit_key],
+            )
+        snapshots[target.id] = snapshot
+        summaries.append(
+            MonitorTargetSummary(
+                id=target.id,
+                head_ref=target.head_ref,
+                worktree_path=str(target.worktree_path) if target.worktree_path is not None else None,
+                last_activity_at=snapshot.last_edit_at or snapshot.head_commit_at,
+                summary=snapshot.summary,
+                is_current=target.is_current,
+            )
+        )
+
+    summaries.sort(key=monitor_target_sort_key)
+    effective_target_id = pick_selected_target_id(selected_target_id, summaries)
+    return MonitorOverview(
+        selected_target_id=effective_target_id,
+        targets=summaries,
+        snapshot=snapshots[effective_target_id],
+    )
+
+
+def collect_target_snapshot(target: MonitorTarget, base_override: str | None = None) -> DiffSnapshot:
+    if target.worktree_path is not None:
+        return collect_snapshot(
+            target.repo_root,
+            base_override,
+            target_id=target.id,
+            worktree_path=target.worktree_path,
+        )
+
+    return collect_snapshot(
+        target.repo_root,
+        base_override,
+        head_ref_override=target.head_ref,
+        target_id=target.id,
+    )
+
+
+def collect_monitor_targets(repo_root: Path) -> list[MonitorTarget]:
+    resolved_root = resolve_repo_root(repo_root)
+    worktree_entries = list_worktrees(resolved_root)
+
+    targets: list[MonitorTarget] = []
+    active_branches: set[str] = set()
+    for entry in worktree_entries:
+        target_id = (
+            build_detached_target_id(entry.path)
+            if entry.is_detached
+            else build_branch_target_id(entry.head_ref)
+        )
+        targets.append(
+            MonitorTarget(
+                id=target_id,
+                head_ref=entry.head_ref,
+                repo_root=entry.path,
+                worktree_path=entry.path,
+                is_current=entry.is_current,
+            )
+        )
+        if not entry.is_detached:
+            active_branches.add(entry.head_ref)
+
+    for branch in list_local_branches(resolved_root):
+        if branch in active_branches:
+            continue
+        targets.append(
+            MonitorTarget(
+                id=build_branch_target_id(branch),
+                head_ref=branch,
+                repo_root=resolved_root,
+                worktree_path=None,
+                is_current=False,
+            )
+        )
+
+    return targets
+
+
+def list_worktrees(repo_root: Path) -> list[WorktreeEntry]:
+    resolved_root = resolve_repo_root(repo_root)
+    raw = git_text(resolved_root, "worktree", "list", "--porcelain")
+    records: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+
+    for line in raw.splitlines():
+        if line.startswith("worktree "):
+            if current:
+                records.append(current)
+            current = {"worktree": line.removeprefix("worktree ")}
+            continue
+
+        key, _, value = line.partition(" ")
+        current[key] = value
+
+    if current:
+        records.append(current)
+
+    entries: list[WorktreeEntry] = []
+    for record in records:
+        path = Path(record["worktree"]).resolve()
+        branch = record.get("branch")
+        head_sha = record.get("HEAD", "")
+        is_detached = "detached" in record or not branch
+        head_ref = branch.removeprefix("refs/heads/") if branch else head_sha[:12]
+        entries.append(
+            WorktreeEntry(
+                path=path,
+                head_ref=head_ref,
+                is_current=path == resolved_root,
+                is_detached=is_detached,
+            )
+        )
+
+    return entries
+
+
+def build_branch_target_id(head_ref: str) -> str:
+    return f"branch:{head_ref}"
+
+
+def build_detached_target_id(worktree_path: Path) -> str:
+    return f"detached:{worktree_path}"
+
+
+def pick_selected_target_id(
+    selected_target_id: str | None,
+    targets: list[MonitorTargetSummary],
+) -> str:
+    if selected_target_id and any(target.id == selected_target_id for target in targets):
+        return selected_target_id
+
+    for target in targets:
+        if target.is_current:
+            return target.id
+
+    return targets[0].id
+
+
+def monitor_target_sort_key(target: MonitorTargetSummary) -> tuple[float, str]:
+    if target.last_activity_at is None:
+        timestamp = 0.0
+    else:
+        timestamp = target.last_activity_at.timestamp()
+    return (-timestamp, target.head_ref.casefold())
+
+
+def merge_latest_timestamp(
+    left: datetime | None,
+    right: datetime | None,
+) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
 
 
 def resolve_repo_root(repo_root: Path) -> Path:
@@ -104,15 +337,19 @@ def resolve_repo_root(repo_root: Path) -> Path:
 
 
 def resolve_watch_paths(repo_root: Path) -> tuple[Path, ...]:
-    repo_root = repo_root.resolve()
-    paths: list[Path] = [repo_root]
+    resolved_root = resolve_repo_root(repo_root)
+    paths: list[Path] = []
+
+    for worktree in list_worktrees(resolved_root):
+        if worktree.path not in paths:
+            paths.append(worktree.path)
 
     for args in (
         ("rev-parse", "--absolute-git-dir"),
         ("rev-parse", "--path-format=absolute", "--git-common-dir"),
     ):
         try:
-            candidate = resolve_git_path(repo_root, *args)
+            candidate = resolve_git_path(resolved_root, *args)
         except ChurnMonitorError:
             continue
 
@@ -135,6 +372,13 @@ def resolve_head_ref(repo_root: Path) -> str:
         return git_text(repo_root, "symbolic-ref", "--quiet", "--short", "HEAD").strip()
     except ChurnMonitorError:
         return git_text(repo_root, "rev-parse", "--short", "HEAD").strip()
+
+
+def resolve_ref_commit_at(repo_root: Path, ref: str) -> datetime | None:
+    raw = git_text(repo_root, "show", "-s", "--format=%ct", ref).strip()
+    if not raw:
+        return None
+    return datetime.fromtimestamp(int(raw), tz=UTC)
 
 
 def resolve_base_ref(repo_root: Path, base_override: str | None = None) -> str:
@@ -177,6 +421,17 @@ def iter_base_candidates(repo_root: Path) -> Iterable[str]:
     yield from AUTODETECT_BASE_CANDIDATES
 
 
+def list_local_branches(repo_root: Path) -> list[str]:
+    raw = git_text(
+        repo_root,
+        "for-each-ref",
+        "--sort=-committerdate",
+        "--format=%(refname:short)",
+        "refs/heads",
+    )
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
 def verify_ref(repo_root: Path, ref: str) -> None:
     git_text(repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
 
@@ -197,6 +452,12 @@ def git_bytes(repo_root: Path, *args: str) -> bytes:
     return run_git(repo_root, *args)
 
 
+def git_numstat(repo_root: Path, merge_base: str, head_spec: str) -> bytes:
+    if head_spec == "HEAD":
+        return git_bytes(repo_root, "diff", "--numstat", "-z", "-M", merge_base)
+    return git_bytes(repo_root, "diff", "--numstat", "-z", "-M", f"{merge_base}..{head_spec}")
+
+
 def run_git(repo_root: Path, *args: str) -> bytes:
     command = ["git", *args]
     completed = subprocess.run(
@@ -212,12 +473,12 @@ def run_git(repo_root: Path, *args: str) -> bytes:
     return completed.stdout
 
 
-def collect_commits(repo_root: Path, merge_base: str) -> list[CommitEntry]:
+def collect_commits(repo_root: Path, merge_base: str, *, head_spec: str = "HEAD") -> list[CommitEntry]:
     raw = git_text(
         repo_root,
         "log",
         "--format=%H%x1f%ct%x1f%s%x1e",
-        f"{merge_base}..HEAD",
+        f"{merge_base}..{head_spec}",
     )
     commits: list[CommitEntry] = []
     for record in raw.split("\x1e"):

@@ -36,8 +36,11 @@ class SnapshotSummary(BaseModel):
 
 
 class DiffSnapshot(BaseModel):
+    target_id: str
     repo_root: str
+    worktree_path: str | None = None
     head_ref: str
+    head_commit_at: datetime | None = None
     base_ref: str
     merge_base: str
     snapshot_key: str
@@ -46,3 +49,18 @@ class DiffSnapshot(BaseModel):
     summary: SnapshotSummary
     commits: list[CommitEntry]
     nodes: list[DiffNode]
+
+
+class MonitorTargetSummary(BaseModel):
+    id: str
+    head_ref: str
+    worktree_path: str | None = None
+    last_activity_at: datetime | None = None
+    summary: SnapshotSummary
+    is_current: bool = False
+
+
+class MonitorOverview(BaseModel):
+    selected_target_id: str
+    targets: list[MonitorTargetSummary]
+    snapshot: DiffSnapshot

@@ -23,14 +23,17 @@ function loadCommitOrder() {
 const state = {
   commitOrder: loadCommitOrder(),
   lastSnapshot: null,
+  lastSnapshotIdentity: null,
   lastEditMs: null,
-  snapshotKey: null,
-  treemapMetric: loadTreemapMetric(),
   relativeTimer: null,
+  selectedTargetId: null,
   stream: null,
+  targets: [],
+  treemapMetric: loadTreemapMetric(),
 };
 
 const els = {
+  targetPills: document.getElementById("target-pills"),
   changedFiles: document.getElementById("changed-files"),
   commitCount: document.getElementById("commit-count"),
   addedLines: document.getElementById("added-lines"),
@@ -166,9 +169,19 @@ function renderCommitTimes() {
   }
 }
 
+function renderTargetTimes() {
+  for (const element of document.querySelectorAll("[data-target-activity-ms]")) {
+    const timestampMs = Number(element.dataset.targetActivityMs);
+    element.textContent = Number.isFinite(timestampMs)
+      ? `updated ${formatRelativeTime(timestampMs)}`
+      : "no recent activity";
+  }
+}
+
 function renderRelativeTimes() {
   renderLastEdit();
   renderCommitTimes();
+  renderTargetTimes();
 }
 
 function applySummary(snapshot) {
@@ -454,9 +467,72 @@ function setStatus(label, tone = "neutral") {
   els.statusPill.className = `status-pill ${tone}`;
 }
 
+function branchPillStats(target) {
+  const summary = target.summary;
+  if (summary.changed_files === 0) {
+    return "aligned with base";
+  }
+  return `${number(summary.changed_files)} files · +${number(summary.added_lines)} -${number(
+    summary.deleted_lines,
+  )}`;
+}
+
+function renderTargetPills(targets) {
+  els.targetPills.replaceChildren();
+
+  if (!targets.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No local branches or worktrees available.";
+    els.targetPills.append(empty);
+    return;
+  }
+
+  for (const target of targets) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "branch-pill";
+    if (target.id === state.selectedTargetId) {
+      button.classList.add("active");
+    }
+    button.setAttribute("aria-pressed", target.id === state.selectedTargetId ? "true" : "false");
+    if (target.worktree_path) {
+      button.title = formatRepoPath(target.worktree_path);
+    }
+
+    const name = document.createElement("span");
+    name.className = "branch-pill-name";
+    name.textContent = target.head_ref;
+
+    const meta = document.createElement("div");
+    meta.className = "branch-pill-meta";
+
+    const time = document.createElement("span");
+    time.className = "branch-pill-time";
+    const activityMs = target.last_activity_at ? Date.parse(target.last_activity_at) : NaN;
+    if (Number.isFinite(activityMs)) {
+      time.dataset.targetActivityMs = String(activityMs);
+      time.textContent = `updated ${formatRelativeTime(activityMs)}`;
+    } else {
+      time.textContent = "no recent activity";
+    }
+
+    const stats = document.createElement("span");
+    stats.className = "branch-pill-stats";
+    stats.textContent = branchPillStats(target);
+
+    meta.append(time, stats);
+    button.append(name, meta);
+    button.addEventListener("click", () => {
+      setSelectedTarget(target.id);
+    });
+    els.targetPills.append(button);
+  }
+}
+
 function renderError(detail) {
   state.lastSnapshot = null;
-  state.snapshotKey = null;
+  state.lastSnapshotIdentity = null;
   setStatus("Needs attention", "negative");
   els.treemap.replaceChildren();
   els.commits.replaceChildren();
@@ -471,17 +547,25 @@ function renderError(detail) {
 
 function applySnapshot(snapshot) {
   state.lastSnapshot = snapshot;
-  if (snapshot.snapshot_key === state.snapshotKey) {
+  const snapshotIdentity = `${snapshot.target_id}:${snapshot.snapshot_key}:${snapshot.last_edit_at ?? ""}`;
+  if (snapshotIdentity === state.lastSnapshotIdentity) {
     setStatus("Live", "neutral");
     return;
   }
 
-  state.snapshotKey = snapshot.snapshot_key;
+  state.lastSnapshotIdentity = snapshotIdentity;
   applySummary(snapshot);
   renderTreemap(snapshot);
   renderCommits(snapshot.commits);
   renderPanels(snapshot);
   setStatus("Live", "positive");
+}
+
+function applyOverview(overview) {
+  state.targets = overview.targets;
+  state.selectedTargetId = overview.selected_target_id;
+  renderTargetPills(overview.targets);
+  applySnapshot(overview.snapshot);
 }
 
 function setTreemapMetric(metric) {
@@ -516,10 +600,25 @@ function setCommitOrder(order) {
   }
 }
 
+function setSelectedTarget(targetId) {
+  if (!targetId || targetId === state.selectedTargetId) {
+    return;
+  }
+
+  state.selectedTargetId = targetId;
+  state.lastSnapshotIdentity = null;
+  renderTargetPills(state.targets);
+  setStatus("Switching", "neutral");
+  connectStream();
+}
+
 function eventsUrl() {
   const params = new URLSearchParams();
   if (config.defaultBase) {
     params.set("base", config.defaultBase);
+  }
+  if (state.selectedTargetId) {
+    params.set("target", state.selectedTargetId);
   }
   return params.size ? `/api/events?${params.toString()}` : "/api/events";
 }
@@ -534,7 +633,7 @@ function connectStream() {
   state.stream = stream;
 
   stream.onopen = () => {
-    if (state.stream === stream && state.snapshotKey === null) {
+    if (state.stream === stream && state.lastSnapshotIdentity === null) {
       setStatus("Syncing", "neutral");
     }
   };
@@ -549,7 +648,7 @@ function connectStream() {
     if (state.stream !== stream) {
       return;
     }
-    applySnapshot(JSON.parse(event.data));
+    applyOverview(JSON.parse(event.data));
   });
 
   stream.addEventListener("problem", (event) => {

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from churn_monitor.app import create_app, encode_sse, snapshot_event
 from churn_monitor.cli import signal_watchers_to_stop
-from churn_monitor.git_diff import ChurnMonitorError, collect_snapshot, resolve_base_ref
+from churn_monitor.git_diff import ChurnMonitorError, collect_overview, collect_snapshot, resolve_base_ref
 
 
 def git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -111,6 +111,51 @@ def test_collect_snapshot_marks_binary_untracked(repo: Path) -> None:
     assert snapshot.summary.binary_files == 1
 
 
+def test_collect_overview_sorts_recent_targets_and_preserves_current_selection(repo: Path) -> None:
+    git(repo, "checkout", "-b", "feature")
+    write(repo, "feature.txt", b"feature work\n")
+    git(repo, "add", "feature.txt")
+    git(
+        repo,
+        "commit",
+        "-m",
+        "feat: add feature branch work",
+        env={
+            "GIT_AUTHOR_DATE": "2026-03-06T10:00:00Z",
+            "GIT_COMMITTER_DATE": "2026-03-06T10:00:00Z",
+        },
+    )
+    git(repo, "checkout", "main")
+
+    feature_worktree = repo.parent / "feature-worktree"
+    git(repo, "worktree", "add", str(feature_worktree), "feature")
+
+    git(repo, "checkout", "-b", "review")
+    write(repo, "review.txt", b"review branch\n")
+    git(repo, "add", "review.txt")
+    git(
+        repo,
+        "commit",
+        "-m",
+        "feat: add review branch work",
+        env={
+            "GIT_AUTHOR_DATE": "2026-03-06T12:00:00Z",
+            "GIT_COMMITTER_DATE": "2026-03-06T12:00:00Z",
+        },
+    )
+    git(repo, "checkout", "main")
+
+    overview = collect_overview(repo)
+
+    assert overview.selected_target_id == "branch:main"
+    assert overview.snapshot.head_ref == "main"
+    assert [target.head_ref for target in overview.targets] == ["review", "feature", "main"]
+    feature_target = next(target for target in overview.targets if target.head_ref == "feature")
+    review_target = next(target for target in overview.targets if target.head_ref == "review")
+    assert feature_target.worktree_path == str(feature_worktree)
+    assert review_target.worktree_path is None
+
+
 def test_api_returns_error_for_unborn_head(tmp_path: Path) -> None:
     git(tmp_path, "init", "--initial-branch=main")
     app = create_app(tmp_path)
@@ -146,18 +191,21 @@ def test_snapshot_event_returns_initial_snapshot(repo: Path) -> None:
     event_name, payload, fingerprint = snapshot_event(repo, None)
 
     assert event_name == "snapshot"
-    assert payload["base_ref"] == "main"
-    assert payload["head_ref"] == "feature"
-    assert fingerprint.startswith("snapshot:")
-    assert payload["summary"]["commit_count"] == 0
-    assert "last_edit_at" in payload
-    assert payload["commits"] == []
+    assert payload["selected_target_id"] == "branch:feature"
+    assert payload["snapshot"]["base_ref"] == "main"
+    assert payload["snapshot"]["head_ref"] == "feature"
+    assert payload["snapshot"]["target_id"] == "branch:feature"
+    assert payload["snapshot"]["summary"]["commit_count"] == 0
+    assert "last_edit_at" in payload["snapshot"]
+    assert payload["snapshot"]["commits"] == []
+    assert {target["head_ref"] for target in payload["targets"]} == {"feature", "main"}
+    assert fingerprint
 
     encoded = encode_sse(event_name, payload, retry_ms=1000)
     assert encoded.startswith("retry: 1000\nevent: snapshot\n")
     payload_line = next(line for line in encoded.splitlines() if line.startswith("data: "))
     decoded = json.loads(payload_line.removeprefix("data: "))
-    assert decoded["snapshot_key"] == payload["snapshot_key"]
+    assert decoded["snapshot"]["snapshot_key"] == payload["snapshot"]["snapshot_key"]
 
 
 def test_snapshot_event_returns_problem_for_invalid_base(repo: Path) -> None:
@@ -194,9 +242,9 @@ def test_snapshot_event_uses_watcher_last_edit(repo: Path) -> None:
     event_name, payload, fingerprint = snapshot_event(
         repo,
         None,
-        last_edit_at=last_edit_at,
+        last_edit_overrides={str(repo): last_edit_at},
     )
 
     assert event_name == "snapshot"
-    assert payload["last_edit_at"] == "2026-03-06T10:00:00Z"
-    assert fingerprint.endswith("2026-03-06T10:00:00Z")
+    assert payload["snapshot"]["last_edit_at"] == "2026-03-06T10:00:00Z"
+    assert fingerprint

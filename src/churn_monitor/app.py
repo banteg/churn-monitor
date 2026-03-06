@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -13,7 +14,13 @@ from fastapi.staticfiles import StaticFiles
 from plotly.offline.offline import get_plotlyjs
 from watchfiles import Change, awatch
 
-from .git_diff import ChurnMonitorError, collect_snapshot, resolve_repo_root, resolve_watch_paths
+from .git_diff import (
+    ChurnMonitorError,
+    collect_monitor_targets,
+    collect_overview,
+    resolve_repo_root,
+    resolve_watch_paths,
+)
 
 WATCH_RETRY_MS = 1000
 WATCH_DEBOUNCE_MS = 400
@@ -43,10 +50,10 @@ def create_app(
         resolved_root = resolve_repo_root(initial_root)
     except ChurnMonitorError:
         resolved_root = initial_root
-    watch_paths = resolve_watch_paths(resolved_root)
     static_dir = Path(__file__).resolve().parent / "static"
     app = FastAPI(title="Churn Monitor", docs_url=None, redoc_url=None, lifespan=lifespan)
     app.state.watch_stop_event = Event()
+    app.state.last_edit_overrides = {}
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     config = {
@@ -54,7 +61,6 @@ def create_app(
         "homeDir": str(Path.home()),
         "defaultBase": default_base or "",
     }
-    app.state.last_edit_at = None
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
@@ -71,60 +77,86 @@ def create_app(
         return Response(content=get_plotlyjs(), media_type="text/javascript")
 
     @app.get("/api/snapshot")
-    def snapshot(base: str | None = Query(default=None)) -> dict[str, object]:
+    def snapshot(
+        base: str | None = Query(default=None),
+        target: str | None = Query(default=None),
+    ) -> dict[str, object]:
         resolved_base = base or default_base
         try:
-            snapshot_model = collect_snapshot(resolved_root, resolved_base)
+            overview_model = collect_overview(
+                resolved_root,
+                resolved_base,
+                selected_target_id=target,
+                last_edit_overrides=app.state.last_edit_overrides,
+            )
         except ChurnMonitorError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-        return snapshot_model.model_dump(mode="json")
+        return overview_model.model_dump(mode="json")
 
     @app.get("/api/events")
     async def events(
         request: Request,
         base: str | None = Query(default=None),
+        target: str | None = Query(default=None),
     ) -> StreamingResponse:
         resolved_base = base or default_base
 
         async def event_stream() -> AsyncIterator[str]:
             last_fingerprint: str | None = None
+            selected_target_id = target
+            watch_paths = resolve_watch_paths(resolved_root)
 
             event_name, payload, fingerprint = snapshot_event(
                 resolved_root,
                 resolved_base,
-                last_edit_at=app.state.last_edit_at,
+                selected_target_id=selected_target_id,
+                last_edit_overrides=app.state.last_edit_overrides,
             )
             last_fingerprint = fingerprint
             yield encode_sse(event_name, payload, retry_ms=WATCH_RETRY_MS)
 
-            async for changes in awatch(
-                *watch_paths,
-                watch_filter=watch_filter,
-                debounce=max(debounce_ms, 50),
-                step=50,
-                stop_event=app.state.watch_stop_event,
-                rust_timeout=WATCH_KEEPALIVE_MS,
-                yield_on_timeout=True,
-            ):
-                if await request.is_disconnected():
+            while True:
+                restart_watch = False
+                async for changes in awatch(
+                    *watch_paths,
+                    watch_filter=watch_filter,
+                    debounce=max(debounce_ms, 50),
+                    step=50,
+                    stop_event=app.state.watch_stop_event,
+                    rust_timeout=WATCH_KEEPALIVE_MS,
+                    yield_on_timeout=True,
+                ):
+                    if await request.is_disconnected():
+                        return
+
+                    if not changes:
+                        yield ": keepalive\n\n"
+                        continue
+
+                    app.state.last_edit_overrides.update(
+                        detect_target_last_edits(resolved_root, changes),
+                    )
+                    event_name, payload, fingerprint = snapshot_event(
+                        resolved_root,
+                        resolved_base,
+                        selected_target_id=selected_target_id,
+                        last_edit_overrides=app.state.last_edit_overrides,
+                    )
+                    next_watch_paths = resolve_watch_paths(resolved_root)
+                    if next_watch_paths != watch_paths:
+                        watch_paths = next_watch_paths
+                        restart_watch = True
+
+                    if fingerprint != last_fingerprint:
+                        last_fingerprint = fingerprint
+                        yield encode_sse(event_name, payload)
+
+                    if restart_watch:
+                        break
+
+                if not restart_watch:
                     break
-
-                if not changes:
-                    yield ": keepalive\n\n"
-                    continue
-
-                app.state.last_edit_at = detect_last_edit_at(changes)
-                event_name, payload, fingerprint = snapshot_event(
-                    resolved_root,
-                    resolved_base,
-                    last_edit_at=app.state.last_edit_at,
-                )
-                if fingerprint == last_fingerprint:
-                    continue
-
-                last_fingerprint = fingerprint
-                yield encode_sse(event_name, payload)
 
         return StreamingResponse(
             event_stream(),
@@ -142,6 +174,7 @@ def create_app(
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.watch_stop_event.clear()
+    app.state.last_edit_overrides = {}
     try:
         yield
     finally:
@@ -152,23 +185,29 @@ def snapshot_event(
     repo_root: Path,
     base_ref: str | None,
     *,
-    last_edit_at: datetime | None = None,
+    selected_target_id: str | None = None,
+    last_edit_overrides: dict[str, datetime] | None = None,
 ) -> tuple[str, dict[str, object], str]:
     try:
-        snapshot_model = collect_snapshot(repo_root, base_ref)
+        overview_model = collect_overview(
+            repo_root,
+            base_ref,
+            selected_target_id=selected_target_id,
+            last_edit_overrides=last_edit_overrides,
+        )
     except ChurnMonitorError as exc:
         payload = {"status": exc.status_code, "detail": str(exc)}
         fingerprint = f"problem:{exc.status_code}:{payload['detail']}"
         return "problem", payload, fingerprint
 
-    if last_edit_at is not None:
-        snapshot_model.last_edit_at = last_edit_at
+    payload = overview_model.model_dump(mode="json")
+    return "snapshot", payload, build_payload_fingerprint(payload)
 
-    payload = snapshot_model.model_dump(mode="json")
-    fingerprint_parts = [f"snapshot:{payload['snapshot_key']}"]
-    if payload["last_edit_at"]:
-        fingerprint_parts.append(payload["last_edit_at"])
-    return "snapshot", payload, "|".join(fingerprint_parts)
+
+def build_payload_fingerprint(payload: dict[str, object]) -> str:
+    digest = hashlib.sha1(usedforsecurity=False)
+    digest.update(json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()[:16]
 
 
 def encode_sse(event: str, payload: dict[str, object], *, retry_ms: int | None = None) -> str:
@@ -187,6 +226,38 @@ def watch_filter(change: Change, path: str) -> bool:
     del change
     path_parts = set(Path(path).parts)
     return not path_parts.intersection(IGNORED_WATCH_PARTS)
+
+
+def detect_target_last_edits(
+    repo_root: Path,
+    changes: set[tuple[Change, str]],
+) -> dict[str, datetime]:
+    overrides: dict[str, datetime] = {}
+    for target in collect_monitor_targets(repo_root):
+        if target.worktree_path is None:
+            continue
+
+        relevant_changes = {
+            change
+            for change in changes
+            if path_is_within(Path(change[1]), target.worktree_path)
+        }
+        if not relevant_changes:
+            continue
+
+        last_edit_at = detect_last_edit_at(relevant_changes)
+        if last_edit_at is not None:
+            overrides[str(target.worktree_path)] = last_edit_at
+
+    return overrides
+
+
+def path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def detect_last_edit_at(changes: set[tuple[Change, str]]) -> datetime | None:
@@ -212,9 +283,5 @@ def detect_last_edit_at(changes: set[tuple[Change, str]]) -> datetime | None:
 
 
 def resolve_asset_version(static_dir: Path) -> str:
-    latest_mtime_ns = max(
-        path.stat().st_mtime_ns
-        for path in static_dir.iterdir()
-        if path.is_file()
-    )
+    latest_mtime_ns = max(path.stat().st_mtime_ns for path in static_dir.iterdir() if path.is_file())
     return str(latest_mtime_ns)
