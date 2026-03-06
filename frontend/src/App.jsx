@@ -163,6 +163,16 @@ function mergeTargetsPayload(previous, incoming) {
   };
 }
 
+function targetPatchFromSnapshot(snapshot) {
+  return {
+    id: snapshot.target_id,
+    head_ref: snapshot.head_ref,
+    worktree_path: snapshot.worktree_path,
+    last_activity_at: snapshot.last_edit_at ?? snapshot.head_commit_at ?? null,
+    summary: snapshot.summary,
+  };
+}
+
 function branchPillStats(target) {
   const summary = target.summary;
   if (!summary) {
@@ -501,7 +511,13 @@ export default function App() {
   const targetsQuery = createQuery(() => ({
     queryKey: ["targets"],
     enabled: Boolean(configQuery.data),
-    queryFn: () => fetchJson("/api/targets"),
+    queryFn: async () => {
+      const payload = await fetchJson("/api/targets");
+      return mergeTargetsPayload(queryClient.getQueryData(["targets"]), {
+        ...payload,
+        reset: false,
+      });
+    },
   }));
 
   const snapshotQuery = createQuery(() => {
@@ -584,6 +600,13 @@ export default function App() {
     if (snapshot && snapshot.target_id === selectedTargetId()) {
       setHasSeenSnapshot(true);
       setProblemMessage("");
+      queryClient.setQueryData(["targets"], (previous) =>
+        mergeTargetsPayload(previous, {
+          reset: false,
+          selected_target_id: snapshot.target_id,
+          targets: [targetPatchFromSnapshot(snapshot)],
+        }),
+      );
     }
   });
 
