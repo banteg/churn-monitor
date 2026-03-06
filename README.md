@@ -77,3 +77,20 @@ After frontend changes, rebuild with:
 ```bash
 npm --prefix frontend run build
 ```
+
+For frontend development with live API data, run the backend and Vite separately:
+
+Terminal 1:
+
+```bash
+uv run churn-monitor --repo /path/to/repo
+```
+
+Terminal 2:
+
+```bash
+npm --prefix frontend run dev
+```
+
+Vite proxies `/api/*` to `http://127.0.0.1:8000` by default. To use a different
+backend URL, set `CHURN_MONITOR_DEV_PROXY_TARGET` when starting Vite.
