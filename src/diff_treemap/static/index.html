@@ -4,12 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Diff View</title>
-    <link rel="stylesheet" href="/static/app.css">
+    <link rel="stylesheet" href="/static/app.css?v=__ASSET_VERSION__">
     <script>
       window.DIFF_TREEMAP_CONFIG = __APP_CONFIG__;
     </script>
-    <script src="/plotly.min.js"></script>
-    <script src="/static/app.js" defer></script>
+    <script src="/plotly.min.js?v=__ASSET_VERSION__"></script>
+    <script src="/static/app.js?v=__ASSET_VERSION__" defer></script>
   </head>
   <body>
     <div class="shell">
@@ -17,6 +17,14 @@
         <div class="info-item repo-item">
           <span class="label">Repo</span>
           <strong id="repo-root">-</strong>
+        </div>
+        <div class="info-item">
+          <span class="label">Branch</span>
+          <strong id="head-ref">-</strong>
+        </div>
+        <div class="info-item">
+          <span class="label">Base</span>
+          <strong id="base-ref">-</strong>
         </div>
         <div class="status-group">
           <span id="last-edit" class="last-edit">-</span>
@@ -35,30 +43,23 @@
             <strong id="commit-count">0</strong>
           </div>
           <div class="summary-item positive">
-            <span>Added lines</span>
+            <span>Added</span>
             <strong id="added-lines">0</strong>
           </div>
           <div class="summary-item negative">
-            <span>Deleted lines</span>
+            <span>Deleted</span>
             <strong id="deleted-lines">0</strong>
           </div>
           <div class="summary-item">
-            <span>Net lines</span>
+            <span>Net</span>
             <strong id="net-lines">0</strong>
+          </div>
+          <div class="summary-item neutral">
+            <span>Churn</span>
+            <strong id="churn-lines">0</strong>
           </div>
         </section>
       </header>
-
-      <section class="topbar info-strip">
-        <div class="info-item">
-          <span class="label">Branch</span>
-          <strong id="head-ref">-</strong>
-        </div>
-        <div class="info-item">
-          <span class="label">Base</span>
-          <strong id="base-ref">-</strong>
-        </div>
-      </section>
 
       <section class="content-grid">
         <article class="panel treemap-panel">

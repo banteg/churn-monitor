@@ -121,6 +121,19 @@ def test_api_returns_error_for_unborn_head(tmp_path: Path) -> None:
     assert "No commits found yet" in response.json()["detail"]
 
 
+def test_index_includes_versioned_static_assets(repo: Path) -> None:
+    app = create_app(repo)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "/static/app.css?v=" in response.text
+    assert "/static/app.js?v=" in response.text
+    assert "/plotly.min.js?v=" in response.text
+    assert "__ASSET_VERSION__" not in response.text
+
+
 def test_collect_snapshot_requires_resolvable_base(repo: Path) -> None:
     git(repo, "checkout", "-b", "feature")
 

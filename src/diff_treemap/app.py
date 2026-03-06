@@ -59,7 +59,8 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     def index() -> HTMLResponse:
         template = (static_dir / "index.html").read_text(encoding="utf-8")
-        html = template.replace(
+        asset_version = resolve_asset_version(static_dir)
+        html = template.replace("__ASSET_VERSION__", asset_version).replace(
             "__APP_CONFIG__",
             json.dumps(config, ensure_ascii=True),
         )
@@ -208,3 +209,12 @@ def detect_last_edit_at(changes: set[tuple[Change, str]]) -> datetime | None:
         return None
 
     return datetime.fromtimestamp(latest_mtime, tz=UTC)
+
+
+def resolve_asset_version(static_dir: Path) -> str:
+    latest_mtime_ns = max(
+        path.stat().st_mtime_ns
+        for path in static_dir.iterdir()
+        if path.is_file()
+    )
+    return str(latest_mtime_ns)

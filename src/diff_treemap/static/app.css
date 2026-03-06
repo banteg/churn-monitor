@@ -28,7 +28,7 @@ body {
   width: min(1480px, calc(100vw - 24px));
   margin: 12px auto;
   display: grid;
-  gap: 10px;
+  gap: 6px;
 }
 
 .topbar,
@@ -37,7 +37,7 @@ body {
 }
 
 .topbar {
-  padding: 6px 4px;
+  padding: 3px 4px;
   display: flex;
   align-items: baseline;
   gap: 12px;
@@ -138,7 +138,7 @@ body {
 .content-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.9fr) minmax(280px, 0.7fr);
-  gap: 12px;
+  gap: 20px;
 }
 
 .panel {
@@ -149,13 +149,14 @@ body {
 .panel-header {
   display: flex;
   justify-content: space-between;
-  align-items: start;
+  align-items: center;
   gap: 16px;
   margin-bottom: 8px;
 }
 
 .panel-title {
   margin: 0;
+  line-height: 1;
 }
 
 .metric-toggle {
@@ -217,7 +218,8 @@ body {
 
 .commit-list {
   margin: 0;
-  padding-left: 16px;
+  padding-left: 0;
+  list-style: none;
   display: grid;
   gap: 4px;
 }
@@ -241,14 +243,19 @@ body {
 .entry-title {
   display: block;
   font-size: 0.98rem;
-  font-weight: 500;
+  font-weight: 400;
 }
 
 .commit-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: baseline;
   column-gap: 8px;
+}
+
+.entry-index {
+  min-width: 1.6rem;
+  text-align: right;
 }
 
 .commit-row .entry-title {

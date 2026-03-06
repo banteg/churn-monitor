@@ -35,6 +35,7 @@ const els = {
   commitCount: document.getElementById("commit-count"),
   addedLines: document.getElementById("added-lines"),
   deletedLines: document.getElementById("deleted-lines"),
+  churnLines: document.getElementById("churn-lines"),
   netLines: document.getElementById("net-lines"),
   repoRoot: document.getElementById("repo-root"),
   headRef: document.getElementById("head-ref"),
@@ -175,6 +176,7 @@ function applySummary(snapshot) {
   els.commitCount.textContent = number(snapshot.summary.commit_count);
   els.addedLines.textContent = number(snapshot.summary.added_lines);
   els.deletedLines.textContent = number(snapshot.summary.deleted_lines);
+  els.churnLines.textContent = number(snapshot.summary.added_lines + snapshot.summary.deleted_lines);
   els.netLines.textContent = formatSigned(snapshot.summary.net_lines);
   els.netLines.className =
     snapshot.summary.net_lines > 0
@@ -379,6 +381,8 @@ function renderCommits(commits) {
     const rightValue = Number.isFinite(rightTime) ? rightTime : 0;
     return state.commitOrder === "chrono" ? leftValue - rightValue : rightValue - leftValue;
   });
+  els.commits.reversed = false;
+  els.commits.start = 1;
 
   if (!orderedCommits.length) {
     const item = document.createElement("li");
@@ -387,10 +391,16 @@ function renderCommits(commits) {
     return;
   }
 
-  for (const commit of orderedCommits) {
+  for (const [index, commit] of orderedCommits.entries()) {
     const item = document.createElement("li");
     const row = document.createElement("div");
     row.className = "commit-row";
+
+    const numberLabel = document.createElement("span");
+    numberLabel.className = "entry-index neutral";
+    numberLabel.textContent = `${
+      state.commitOrder === "chrono" ? index + 1 : orderedCommits.length - index
+    }.`;
 
     const title = document.createElement("span");
     title.className = "entry-title";
@@ -406,7 +416,7 @@ function renderCommits(commits) {
       relativeTime.textContent = "-";
     }
 
-    row.append(title, relativeTime);
+    row.append(numberLabel, title, relativeTime);
     item.append(row);
     els.commits.append(item);
   }
