@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@tanstack/solid-query": "^5.90.23",
+    "@tanstack/solid-query-devtools": "^5.91.3",
     "plotly.js-dist-min": "^3.4.0",
     "solid-js": "^1.9.11"
   },

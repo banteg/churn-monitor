@@ -1,4 +1,5 @@
 import { createQuery, useQueryClient } from "@tanstack/solid-query";
+import { SolidQueryDevtools } from "@tanstack/solid-query-devtools";
 import {
   For,
   Show,
@@ -897,6 +898,8 @@ export default function App() {
           </article>
         </aside>
       </section>
+
+      <SolidQueryDevtools initialIsOpen={false} />
     </div>
   );
 }
