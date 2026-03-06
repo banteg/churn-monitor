@@ -128,12 +128,27 @@ function targetActivityMs(target) {
   return parseTimestamp(target.last_activity_at) ?? -1;
 }
 
+function targetDiffPriority(target) {
+  if (!target.summary) {
+    return 1;
+  }
+  return target.summary.changed_files === 0 ? 2 : 0;
+}
+
 function targetHasDiff(target) {
   return Boolean(target.summary && target.summary.changed_files > 0);
 }
 
-function sortTargets(targets) {
+function sortTargets(targets, preferDiffs) {
   return [...targets].sort((left, right) => {
+    if (preferDiffs) {
+      const leftPriority = targetDiffPriority(left);
+      const rightPriority = targetDiffPriority(right);
+      if (leftPriority !== rightPriority) {
+        return leftPriority - rightPriority;
+      }
+    }
+
     const rightTime = targetActivityMs(right);
     const leftTime = targetActivityMs(left);
     if (rightTime !== leftTime) {
@@ -617,11 +632,14 @@ export default function App() {
     }
   });
 
-  const sortedTargets = createMemo(() => sortTargets(targetsQuery.data?.targets ?? []));
+  const visibleTargets = createMemo(() => targetsQuery.data?.targets ?? []);
   const allVisibleTargetsSummarized = createMemo(() => {
-    const targets = sortedTargets();
+    const targets = visibleTargets();
     return targets.length > 0 && targets.every((target) => target.summary);
   });
+  const sortedTargets = createMemo(() =>
+    sortTargets(visibleTargets(), allVisibleTargetsSummarized()),
+  );
 
   const selectedTarget = createMemo(() => {
     const targetId = selectedTargetId();
