@@ -92,6 +92,25 @@ def resolve_repo_root(repo_root: Path) -> Path:
     return Path(actual_root).resolve()
 
 
+def resolve_watch_paths(repo_root: Path) -> tuple[Path, ...]:
+    repo_root = repo_root.resolve()
+    paths: list[Path] = [repo_root]
+
+    for args in (
+        ("rev-parse", "--absolute-git-dir"),
+        ("rev-parse", "--path-format=absolute", "--git-common-dir"),
+    ):
+        try:
+            candidate = resolve_git_path(repo_root, *args)
+        except DiffTreemapError:
+            continue
+
+        if candidate not in paths:
+            paths.append(candidate)
+
+    return tuple(paths)
+
+
 def head_exists(repo_root: Path) -> bool:
     try:
         git_text(repo_root, "rev-parse", "--verify", "HEAD^{commit}")
@@ -149,6 +168,14 @@ def iter_base_candidates(repo_root: Path) -> Iterable[str]:
 
 def verify_ref(repo_root: Path, ref: str) -> None:
     git_text(repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}")
+
+
+def resolve_git_path(repo_root: Path, *args: str) -> Path:
+    raw = git_text(repo_root, *args).strip()
+    path = Path(raw)
+    if not path.is_absolute():
+        path = repo_root / path
+    return path.resolve()
 
 
 def git_text(repo_root: Path, *args: str) -> str:

@@ -2,26 +2,45 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import AsyncIterator
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, Response
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from plotly.offline.offline import get_plotlyjs
+from watchfiles import Change, awatch
 
-from .git_diff import DiffTreemapError, collect_snapshot, resolve_repo_root
+from .git_diff import DiffTreemapError, collect_snapshot, resolve_repo_root, resolve_watch_paths
+
+WATCH_RETRY_MS = 1000
+WATCH_DEBOUNCE_MS = 400
+WATCH_KEEPALIVE_MS = 15000
+IGNORED_WATCH_PARTS = {
+    ".hypothesis",
+    ".idea",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+}
 
 
 def create_app(
     repo_root: Path | None = None,
     *,
     default_base: str | None = None,
-    poll_ms: int = 1000,
+    debounce_ms: int = WATCH_DEBOUNCE_MS,
 ) -> FastAPI:
     initial_root = (repo_root or Path.cwd()).resolve()
     try:
         resolved_root = resolve_repo_root(initial_root)
     except DiffTreemapError:
         resolved_root = initial_root
+    watch_paths = resolve_watch_paths(resolved_root)
     static_dir = Path(__file__).resolve().parent / "static"
     app = FastAPI(title="Diff Treemap", docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -29,7 +48,6 @@ def create_app(
     config = {
         "repoRoot": str(resolved_root),
         "defaultBase": default_base or "",
-        "pollMs": poll_ms,
     }
 
     @app.get("/", response_class=HTMLResponse)
@@ -55,4 +73,80 @@ def create_app(
 
         return snapshot_model.model_dump(mode="json")
 
+    @app.get("/api/events")
+    async def events(
+        request: Request,
+        base: str | None = Query(default=None),
+    ) -> StreamingResponse:
+        resolved_base = base or default_base
+
+        async def event_stream() -> AsyncIterator[str]:
+            last_fingerprint: str | None = None
+
+            event_name, payload, fingerprint = snapshot_event(resolved_root, resolved_base)
+            last_fingerprint = fingerprint
+            yield encode_sse(event_name, payload, retry_ms=WATCH_RETRY_MS)
+
+            async for changes in awatch(
+                *watch_paths,
+                watch_filter=watch_filter,
+                debounce=max(debounce_ms, 50),
+                step=50,
+                rust_timeout=WATCH_KEEPALIVE_MS,
+                yield_on_timeout=True,
+            ):
+                if await request.is_disconnected():
+                    break
+
+                if not changes:
+                    yield ": keepalive\n\n"
+                    continue
+
+                event_name, payload, fingerprint = snapshot_event(resolved_root, resolved_base)
+                if fingerprint == last_fingerprint:
+                    continue
+
+                last_fingerprint = fingerprint
+                yield encode_sse(event_name, payload)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     return app
+
+
+def snapshot_event(repo_root: Path, base_ref: str | None) -> tuple[str, dict[str, object], str]:
+    try:
+        snapshot_model = collect_snapshot(repo_root, base_ref)
+    except DiffTreemapError as exc:
+        payload = {"status": exc.status_code, "detail": str(exc)}
+        fingerprint = f"problem:{exc.status_code}:{payload['detail']}"
+        return "problem", payload, fingerprint
+
+    payload = snapshot_model.model_dump(mode="json")
+    return "snapshot", payload, f"snapshot:{payload['snapshot_key']}"
+
+
+def encode_sse(event: str, payload: dict[str, object], *, retry_ms: int | None = None) -> str:
+    lines: list[str] = []
+    if retry_ms is not None:
+        lines.append(f"retry: {retry_ms}")
+    lines.append(f"event: {event}")
+    for line in json.dumps(payload, ensure_ascii=True).splitlines():
+        lines.append(f"data: {line}")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def watch_filter(change: Change, path: str) -> bool:
+    del change
+    path_parts = set(Path(path).parts)
+    return not path_parts.intersection(IGNORED_WATCH_PARTS)

@@ -1,9 +1,8 @@
 const config = window.DIFF_TREEMAP_CONFIG ?? {};
 const state = {
   snapshotKey: null,
-  pollMs: Math.max(config.pollMs ?? 1000, 250),
   base: new URLSearchParams(window.location.search).get("base") || config.defaultBase || "",
-  timer: null,
+  stream: null,
 };
 
 const els = {
@@ -59,12 +58,12 @@ function nodeColor(node) {
 }
 
 function renderTreemap(snapshot) {
-  const hasLeaves = snapshot.nodes.some((node) => node.kind === "file");
-  if (!hasLeaves) {
+  const hasVisibleArea = snapshot.nodes.some((node) => node.kind === "file" && node.value > 0);
+  if (!hasVisibleArea) {
     els.treemap.replaceChildren();
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No changes relative to the selected base.";
+    empty.textContent = "No line changes relative to the selected base.";
     els.treemap.append(empty);
     return;
   }
@@ -72,7 +71,7 @@ function renderTreemap(snapshot) {
   const ids = snapshot.nodes.map((node) => node.id);
   const labels = snapshot.nodes.map((node) => node.label);
   const parents = snapshot.nodes.map((node) => node.parent ?? "");
-  const values = snapshot.nodes.map((node) => Math.max(node.value, 1));
+  const values = snapshot.nodes.map((node) => node.value);
   const colors = snapshot.nodes.map(nodeColor);
   const hoverText = snapshot.nodes.map((node) => {
     const previous = node.previous_path ? `<br>rename from: ${node.previous_path}` : "";
@@ -177,46 +176,75 @@ function setStatus(label, tone = "neutral") {
   els.statusPill.className = `status-pill ${tone}`;
 }
 
-async function fetchSnapshot() {
+function renderError(detail) {
+  state.snapshotKey = null;
+  setStatus("Needs attention", "negative");
+  els.treemap.replaceChildren();
+  els.additions.replaceChildren();
+  els.deletions.replaceChildren();
+
+  const message = document.createElement("div");
+  message.className = "empty-state";
+  message.textContent = detail;
+  els.treemap.append(message);
+}
+
+function applySnapshot(snapshot) {
+  if (snapshot.snapshot_key === state.snapshotKey) {
+    setStatus("Live", "neutral");
+    return;
+  }
+
+  state.snapshotKey = snapshot.snapshot_key;
+  applySummary(snapshot);
+  renderTreemap(snapshot);
+  renderPanels(snapshot);
+  setStatus("Live", "positive");
+}
+
+function eventsUrl() {
   const params = new URLSearchParams();
   if (state.base) {
     params.set("base", state.base);
   }
-
-  const url = params.size ? `/api/snapshot?${params.toString()}` : "/api/snapshot";
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ detail: "Unable to load snapshot." }));
-    throw new Error(payload.detail || "Unable to load snapshot.");
-  }
-  return response.json();
+  return params.size ? `/api/events?${params.toString()}` : "/api/events";
 }
 
-async function refresh() {
-  try {
-    const snapshot = await fetchSnapshot();
-    if (snapshot.snapshot_key === state.snapshotKey) {
-      setStatus("Watching", "neutral");
+function connectStream() {
+  if (state.stream) {
+    state.stream.close();
+  }
+
+  setStatus("Connecting", "neutral");
+  const stream = new EventSource(eventsUrl());
+  state.stream = stream;
+
+  stream.onopen = () => {
+    if (state.stream === stream && state.snapshotKey === null) {
+      setStatus("Syncing", "neutral");
+    }
+  };
+
+  stream.onerror = () => {
+    if (state.stream === stream) {
+      setStatus("Reconnecting", "neutral");
+    }
+  };
+
+  stream.addEventListener("snapshot", (event) => {
+    if (state.stream !== stream) {
       return;
     }
+    applySnapshot(JSON.parse(event.data));
+  });
 
-    state.snapshotKey = snapshot.snapshot_key;
-    applySummary(snapshot);
-    renderTreemap(snapshot);
-    renderPanels(snapshot);
-    setStatus("Watching", "positive");
-  } catch (error) {
-    state.snapshotKey = null;
-    setStatus("Needs attention", "negative");
-    els.treemap.replaceChildren();
-    els.additions.replaceChildren();
-    els.deletions.replaceChildren();
-
-    const message = document.createElement("div");
-    message.className = "empty-state";
-    message.textContent = error.message;
-    els.treemap.append(message);
-  }
+  stream.addEventListener("problem", (event) => {
+    if (state.stream !== stream) {
+      return;
+    }
+    const payload = JSON.parse(event.data);
+    renderError(payload.detail || "Unable to load snapshot.");
+  });
 }
 
 function applyBase(base) {
@@ -229,7 +257,7 @@ function applyBase(base) {
   }
   window.history.replaceState({}, "", url);
   state.snapshotKey = null;
-  refresh();
+  connectStream();
 }
 
 els.baseInput.value = state.base;
@@ -238,5 +266,4 @@ els.baseForm.addEventListener("submit", (event) => {
   applyBase(els.baseInput.value);
 });
 
-refresh();
-state.timer = window.setInterval(refresh, state.pollMs);
+connectStream();

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from diff_treemap.app import create_app
+from diff_treemap.app import create_app, encode_sse, snapshot_event
 from diff_treemap.git_diff import DiffTreemapError, collect_snapshot, resolve_base_ref
 
 
@@ -106,3 +107,28 @@ def test_collect_snapshot_requires_resolvable_base(repo: Path) -> None:
 
     with pytest.raises(DiffTreemapError):
         collect_snapshot(repo, "missing-branch")
+
+
+def test_snapshot_event_returns_initial_snapshot(repo: Path) -> None:
+    git(repo, "checkout", "-b", "feature")
+    event_name, payload, fingerprint = snapshot_event(repo, None)
+
+    assert event_name == "snapshot"
+    assert payload["base_ref"] == "main"
+    assert payload["head_ref"] == "feature"
+    assert fingerprint.startswith("snapshot:")
+
+    encoded = encode_sse(event_name, payload, retry_ms=1000)
+    assert encoded.startswith("retry: 1000\nevent: snapshot\n")
+    payload_line = next(line for line in encoded.splitlines() if line.startswith("data: "))
+    decoded = json.loads(payload_line.removeprefix("data: "))
+    assert decoded["snapshot_key"] == payload["snapshot_key"]
+
+
+def test_snapshot_event_returns_problem_for_invalid_base(repo: Path) -> None:
+    git(repo, "checkout", "-b", "feature")
+    event_name, payload, fingerprint = snapshot_event(repo, "missing")
+
+    assert event_name == "problem"
+    assert payload["status"] == 404
+    assert fingerprint.startswith("problem:")
