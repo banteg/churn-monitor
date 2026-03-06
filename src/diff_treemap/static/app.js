@@ -341,8 +341,18 @@ function renderChangeList(container, entries, direction) {
     return;
   }
 
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     const item = document.createElement("li");
+    const row = document.createElement("div");
+    row.className = "change-row";
+
+    const numberLabel = document.createElement("span");
+    numberLabel.className = "entry-index neutral";
+    numberLabel.textContent = `${index + 1}.`;
+
+    const body = document.createElement("div");
+    body.className = "entry-body";
+
     const title = document.createElement("span");
     title.className = "entry-title";
     title.textContent = entry.path;
@@ -367,7 +377,9 @@ function renderChangeList(container, entries, direction) {
 
     delta.append(added, deleted);
     meta.append(net, delta);
-    item.append(title, meta);
+    body.append(title, meta);
+    row.append(numberLabel, body);
+    item.append(row);
     container.append(item);
   }
 }

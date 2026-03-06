@@ -141,6 +141,19 @@ body {
   gap: 20px;
 }
 
+.main-stack {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.change-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
 .panel {
   border-radius: 0;
   padding: 0;
@@ -206,12 +219,14 @@ body {
 
 .side-stack {
   display: grid;
-  gap: 6px;
+  gap: 0;
+  align-content: start;
 }
 
 .change-list {
   margin: 0;
-  padding-left: 16px;
+  padding-left: 0;
+  list-style: none;
   display: grid;
   gap: 4px;
 }
@@ -246,6 +261,13 @@ body {
   font-weight: 400;
 }
 
+.change-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+}
+
 .commit-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -258,6 +280,13 @@ body {
   text-align: right;
 }
 
+.entry-body {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.change-row .entry-title,
 .commit-row .entry-title {
   min-width: 0;
 }
@@ -271,7 +300,7 @@ body {
   display: flex;
   gap: 8px;
   color: var(--muted);
-  font-size: 0.88rem;
+  font-size: 0.84rem;
   flex-wrap: wrap;
 }
 
@@ -304,6 +333,10 @@ body {
 
 @media (max-width: 1080px) {
   .content-grid,
+  .change-panels {
+    grid-template-columns: 1fr;
+  }
+
   .repo-strip,
   .summary-bar,
   .info-strip {

@@ -62,15 +62,33 @@
       </header>
 
       <section class="content-grid">
-        <article class="panel treemap-panel">
-          <div class="panel-header">
-            <div class="metric-toggle" role="group" aria-label="Size metric">
-              <button type="button" class="metric-button" data-treemap-metric="churn">Churn</button>
-              <button type="button" class="metric-button" data-treemap-metric="net">Net</button>
+        <section class="main-stack">
+          <article class="panel treemap-panel">
+            <div class="panel-header">
+              <div class="metric-toggle" role="group" aria-label="Size metric">
+                <button type="button" class="metric-button" data-treemap-metric="churn">Churn</button>
+                <button type="button" class="metric-button" data-treemap-metric="net">Net</button>
+              </div>
             </div>
-          </div>
-          <div id="treemap" class="treemap"></div>
-        </article>
+            <div id="treemap" class="treemap"></div>
+          </article>
+
+          <section class="change-panels">
+            <article class="panel">
+              <div class="panel-header">
+                <p class="panel-title">Top Additions</p>
+              </div>
+              <ol id="top-additions" class="change-list"></ol>
+            </article>
+
+            <article class="panel">
+              <div class="panel-header">
+                <p class="panel-title">Top Cuts</p>
+              </div>
+              <ol id="top-deletions" class="change-list"></ol>
+            </article>
+          </section>
+        </section>
 
         <aside class="side-stack">
           <article class="panel">
@@ -82,20 +100,6 @@
               </div>
             </div>
             <ol id="commit-list" class="commit-list"></ol>
-          </article>
-
-          <article class="panel">
-            <div class="panel-header">
-              <p class="panel-title">Top Additions</p>
-            </div>
-            <ol id="top-additions" class="change-list"></ol>
-          </article>
-
-          <article class="panel">
-            <div class="panel-header">
-              <p class="panel-title">Top Cuts</p>
-            </div>
-            <ol id="top-deletions" class="change-list"></ol>
           </article>
         </aside>
       </section>
